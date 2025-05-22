@@ -4,7 +4,7 @@ import numpy as np
 import geopandas as gpd
 import contextily as ctx
 import matplotlib.pyplot as plt
-# from matplotlib.patches import Wedge # No longer needed
+# from matplotlib.patches import Wedge
 import math
 import pyproj
 from shapely.geometry import Point, MultiPolygon
@@ -12,6 +12,7 @@ from shapely.ops import transform, unary_union
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import io
+import os # Needed to construct file path
 
 st.set_page_config(layout="wide")
 
@@ -27,19 +28,77 @@ Paste your list of ZIP codes to analyze. The app will:
 # HELPER FUNCTIONS
 ###############################################################################
 
-def load_us_zip_codes(uploaded_file_object) -> gpd.GeoDataFrame:
-    if uploaded_file_object is None: return gpd.GeoDataFrame()
+# Path to the master US ZIP code file in the repository
+# Assumes 'us_zip_master.csv' is in the same directory as the Streamlit script
+MASTER_ZIP_FILE_PATH = "us_zip_master.csv" 
+
+def load_us_zip_codes(csv_file_path: str) -> gpd.GeoDataFrame:
+    """Loads US ZIP code data from a CSV file in the repository."""
     try:
-        df = pd.read_csv(uploaded_file_object, dtype={'zip': str})
-        df.columns = df.columns.str.strip().str.lower()
-        if 'longitude' not in df.columns or 'latitude' not in df.columns:
-            st.error("US ZIP Codes Master File CSV must contain 'longitude' and 'latitude' columns.")
+        # Check if file exists
+        if not os.path.exists(csv_file_path):
+            st.error(f"Critical Error: The US ZIP Codes Master File ('{csv_file_path}') was not found in the repository.")
+            st.error("Please ensure 'us_zip_master.csv' (with 'zip' and 'Geo Point' or 'latitude'/'longitude' columns) is in the GitHub repository alongside the Streamlit script.")
             return gpd.GeoDataFrame()
-        df['zip'] = df['zip'].str.zfill(5)
+
+        # Determine delimiter by reading the first line
+        with open(csv_file_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline()
+        delimiter = ';' if ';' in first_line else ','
+
+
+        df = pd.read_csv(csv_file_path, dtype={'zip': str, 'Zip Code': str}, delimiter=delimiter) # Try to read zip as string
+        original_columns = list(df.columns)
+        df.columns = df.columns.str.strip().str.lower()
+        
+        # Identify ZIP column
+        zip_col_name = None
+        if 'zip' in df.columns:
+            zip_col_name = 'zip'
+        elif 'zip code' in df.columns: # From "Zip Code"
+            zip_col_name = 'zip code'
+            df.rename(columns={'zip code': 'zip'}, inplace=True)
+        else:
+            # Try to find a column name from original_columns that matches common zip patterns
+            for col in original_columns:
+                if col.lower().strip() == 'zip' or col.lower().strip() == 'zip code':
+                    df.rename(columns={col.lower().strip(): 'zip'}, inplace=True)
+                    zip_col_name = 'zip'
+                    break
+            if not zip_col_name:
+                st.error(f"Master US ZIP file ('{csv_file_path}') must contain a 'zip' or 'Zip Code' column.")
+                return gpd.GeoDataFrame()
+        
+        df['zip'] = df['zip'].astype(str).str.zfill(5)
+
+        # Identify latitude and longitude columns OR Geo Point
+        if 'latitude' in df.columns and 'longitude' in df.columns:
+            # Use existing latitude and longitude columns
+            pass # They are already correctly named after lowercasing
+        elif 'geo point' in df.columns:
+            try:
+                # Expected format: "latitude,longitude"
+                lat_lon_split = df['geo point'].astype(str).str.split(',', expand=True)
+                df['latitude'] = pd.to_numeric(lat_lon_split[0], errors='coerce')
+                df['longitude'] = pd.to_numeric(lat_lon_split[1], errors='coerce')
+                if df['latitude'].isnull().any() or df['longitude'].isnull().any():
+                    st.error(f"Could not parse all 'Geo Point' values in '{csv_file_path}'. Ensure format is 'latitude,longitude'.")
+                    return gpd.GeoDataFrame()
+            except Exception as e:
+                st.error(f"Error parsing 'Geo Point' column in '{csv_file_path}': {e}")
+                return gpd.GeoDataFrame()
+        else:
+            st.error(f"Master US ZIP file ('{csv_file_path}') must contain 'latitude' & 'longitude' columns OR a 'Geo Point' column.")
+            return gpd.GeoDataFrame()
+
         gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
         return gdf
+    except FileNotFoundError:
+        st.error(f"Critical Error: The US ZIP Codes Master File ('{csv_file_path}') was not found. Please add it to your GitHub repository.")
+        return gpd.GeoDataFrame()
     except Exception as e:
-        st.error(f"Error loading US ZIP Codes Master File: {e}"); return gpd.GeoDataFrame()
+        st.error(f"Error loading US ZIP Codes Master File ('{csv_file_path}'): {e}")
+        return gpd.GeoDataFrame()
 
 def load_ad_target_zips(uploaded_file_object) -> pd.DataFrame:
     if uploaded_file_object is None: return pd.DataFrame(columns=['zip'])
@@ -111,7 +170,6 @@ def create_geodesic_buffers(gdf_points, radii=(5,10,25)):
     for r in active_radii:
         col_name = f"buffer_{r}"
         if col_name in gdf_points.columns and gdf_points[col_name].notna().all(): continue 
-
         poly_list = []
         for _, row in gdf_points.iterrows():
             geom = row.geometry
@@ -128,7 +186,8 @@ def create_geodesic_buffers(gdf_points, radii=(5,10,25)):
 def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None, 
                       show_5_mile_buffer=True, show_10_mile_buffer=True, show_25_mile_buffer=False):
     if gdf_us.empty:
-        st.error("US ZIP Code Master File is essential."); fig, ax = plt.subplots(); ax.text(0.5,0.5,"US ZIP Data Missing", ha='center'); return fig
+        # Error for missing master file is handled in load_us_zip_codes now
+        fig, ax = plt.subplots(); ax.text(0.5,0.5,"US ZIP Data Missing or Error", ha='center'); return fig
     if df_input_zips.empty:
         st.info("Enter ZIP codes for analysis to generate map."); fig, ax = plt.subplots(); ax.text(0.5,0.5,"Enter ZIPs for Analysis", ha='center'); return fig
 
@@ -203,9 +262,9 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
     k12_label = "K-12 Schools"
     if not gdf_k12_plot_3857.empty:
         if active_school_filter_radius > 0: k12_label = f"K-12 Schools (in {active_school_filter_radius}mi radius of Input ZIPs)"
-        else: k12_label = f"K-12 Schools (All Uploaded)" # If no active buffer for filtering, but K12 data exists
+        else: k12_label = f"K-12 Schools (All Uploaded)" 
         gdf_k12_plot_3857.plot(ax=ax, marker='^', color='deepskyblue', markersize=50, label=k12_label, zorder=3, alpha=0.9, edgecolor='black')
-    elif gdf_k12_schools is not None and not gdf_k12_schools.empty and active_school_filter_radius > 0 : # K12 uploaded, filter radius active, but none found
+    elif gdf_k12_schools is not None and not gdf_k12_schools.empty and active_school_filter_radius > 0 : 
         st.info(f"No K-12 schools found within the {active_school_filter_radius}-mile radius of the input ZIP codes.")
 
     try: ctx.add_basemap(ax, crs=gdf_input_3857.crs.to_string(), source=ctx.providers.OpenStreetMap.Mapnik, zoom='auto', attribution_size=5)
@@ -231,47 +290,56 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
 ###############################################################################
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
-st.sidebar.header("1. Enter/Paste ZIP Codes for Analysis") # Changed Label
-zip_code_input_text = st.sidebar.text_area("Paste the list of ZIP codes you want to analyze (comma, space, or newline separated). The app will map these specific ZIPs and their coverage.", height=150, key="zip_input_area_v5", # Changed help text and key
+st.sidebar.header("1. Enter/Paste ZIP Codes for Analysis") 
+zip_code_input_text = st.sidebar.text_area("Paste the list of ZIP codes you want to analyze (comma, space, or newline separated). The app will map these specific ZIPs and their coverage.", height=150, key="zip_input_area_v6",
 help="Enter 5-digit ZIP codes.")
 
 st.sidebar.header("2. Display Options for Input ZIPs")
-show_5_mile = st.sidebar.checkbox("Show 5-mile radius", value=True, key="show_5_v5")
-show_10_mile = st.sidebar.checkbox("Show 10-mile radius", value=True, key="show_10_v5")
-show_25_mile = st.sidebar.checkbox("Show 25-mile radius (Indeed Ad Range)", value=False, key="show_25_v5")
+show_5_mile = st.sidebar.checkbox("Show 5-mile radius", value=True, key="show_5_v6")
+show_10_mile = st.sidebar.checkbox("Show 10-mile radius", value=True, key="show_10_v6")
+show_25_mile = st.sidebar.checkbox("Show 25-mile radius (Indeed Ad Range)", value=False, key="show_25_v6")
 
-st.sidebar.header("3. Upload Supporting Data (CSV)")
-uploaded_us_zips_file = st.sidebar.file_uploader("US ZIP Codes Master File (Required: must contain 'zip', 'latitude', 'longitude' columns for a comprehensive list of US ZIPs)", type="csv", key="us_zips_v5") # Changed Label
-uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v5")
-uploaded_k12_schools_file = st.sidebar.file_uploader("K-12 School Locations (Optional: name, latitude, longitude)", type="csv", key="k12_schools_v5")
+st.sidebar.header("3. Upload Optional Data (CSV)") # Changed header
+# Removed the uploader for US ZIP Codes Master File as it's now built-in
+uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v6")
+uploaded_k12_schools_file = st.sidebar.file_uploader("K-12 School Locations (Optional: name, latitude, longitude)", type="csv", key="k12_schools_v6")
 
-if uploaded_us_zips_file and zip_code_input_text.strip():
-    st.sidebar.success("Core inputs provided!")
-    gdf_us_data = load_us_zip_codes(uploaded_us_zips_file)
+# Load the master US ZIP code data automatically
+gdf_us_data = load_us_zip_codes(MASTER_ZIP_FILE_PATH)
+
+
+if gdf_us_data.empty:
+    st.error("Failed to load the built-in US ZIP Codes Master File. Please check the file in the repository and ensure it's named 'us_zip_master.csv'.")
+    st.stop() # Stop execution if master file fails
+
+if zip_code_input_text.strip():
+    st.sidebar.success("ZIP codes for analysis provided!")
+    
     df_input_zips_data = parse_input_zips(zip_code_input_text)
     df_ad_targets_data = load_ad_target_zips(uploaded_ad_targets_file) if uploaded_ad_targets_file else pd.DataFrame(columns=['zip'])
     gdf_k12_schools_data = load_k12_schools(uploaded_k12_schools_file) if uploaded_k12_schools_file else gpd.GeoDataFrame()
 
     data_load_success = True
-    if gdf_us_data.empty: st.error("US ZIP Codes Master File is essential."); data_load_success = False
-    if df_input_zips_data.empty: st.warning("No valid ZIPs parsed from input text area."); data_load_success = False # Changed message
-    if uploaded_ad_targets_file and df_ad_targets_data.empty and uploaded_ad_targets_file is not None : st.warning("Problem loading 'Ad Target ZIPs'.")
-    if uploaded_k12_schools_file and gdf_k12_schools_data.empty and uploaded_k12_schools_file is not None: st.warning("Problem loading 'K-12 Schools'.")
+    if df_input_zips_data.empty: st.warning("No valid ZIPs parsed from input text area."); data_load_success = False 
+    
+    # Warnings for optional files if they were uploaded but failed to load
+    if uploaded_ad_targets_file and df_ad_targets_data.empty: st.warning("Problem loading 'Ad Target ZIPs'. It will be excluded.")
+    if uploaded_k12_schools_file and gdf_k12_schools_data.empty: st.warning("Problem loading 'K-12 Schools'. It will be excluded.")
 
     if data_load_success:
-        st.info("Data loaded. Generating map...")
+        st.info("Data ready. Generating map...")
         try:
             map_figure = generate_map_plot(gdf_us_data, df_input_zips_data, df_ad_targets_data, gdf_k12_schools_data,
                                            show_5_mile_buffer=show_5_mile, show_10_mile_buffer=show_10_mile, show_25_mile_buffer=show_25_mile)
             st.pyplot(map_figure) ; st.success("Map generated successfully!")
-            fn = 'zip_analysis_map_v5.png'; img = io.BytesIO()
+            fn = 'zip_analysis_map_v6.png'; img = io.BytesIO()
             map_figure.savefig(img, format='png', dpi=300, bbox_inches='tight')
             st.download_button(label="Download Map as PNG", data=img, file_name=fn, mime="image/png")
         except Exception as e: st.error(f"Error during map generation: {e}"); st.exception(e)
-    elif not gdf_us_data.empty and df_input_zips_data.empty : st.warning("Provide valid ZIPs in the text area to generate map.") # Changed message
-    else: st.warning("Map could not be generated due to critical data loading issues.")
+    elif df_input_zips_data.empty : st.warning("Provide valid ZIPs in the text area to generate map.")
+    # gdf_us_data failure is handled above with st.stop()
 else:
-    st.sidebar.info("Paste ZIP codes for analysis & upload 'US ZIP Codes Master File' CSV to generate map.") # Changed message
-    st.info("Awaiting inputs...")
+    st.sidebar.info("Paste ZIP codes for analysis in Section 1 to generate the map.") 
+    st.info("Awaiting ZIP code input for analysis...")
 st.markdown("---")
 st.markdown("Visualizes ZIP code coverage and K-12 school proximity for strategic planning.")
