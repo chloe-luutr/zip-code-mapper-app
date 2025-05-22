@@ -143,18 +143,18 @@ def parse_input_zips(zip_code_text_input: str) -> pd.DataFrame:
     return df.drop_duplicates()
 
 def load_k12_schools(uploaded_file_object) -> gpd.GeoDataFrame:
-    if uploaded_file_object is None: return gpd.GeoDataFrame()
+    if uploaded_file_object is None: return gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326") # Return empty GDF with schema
     try:
         df = pd.read_csv(uploaded_file_object)
         df.columns = df.columns.str.strip().str.lower()
         if 'latitude' not in df.columns or 'longitude' not in df.columns:
             st.error("K-12 Schools CSV must contain 'latitude' and 'longitude' columns.")
-            return gpd.GeoDataFrame()
+            return gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326")
         if 'name' not in df.columns: df['name'] = 'K-12 School'
         gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
         return gdf
     except Exception as e:
-        st.error(f"Error loading K-12 Schools: {e}"); return gpd.GeoDataFrame()
+        st.error(f"Error loading K-12 Schools: {e}"); return gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326")
 
 def geodesic_buffer(lon, lat, miles):
     radius_m = miles * 1609.34 ; wgs84 = pyproj.CRS("EPSG:4326")
@@ -206,16 +206,18 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
     if radii_to_create:
         gdf_input_zips_geo = create_geodesic_buffers(gdf_input_zips_geo, radii=tuple(radii_to_create))
 
-    gdf_ad_targets_geo = gpd.GeoDataFrame(crs="EPSG:4326")
+    # Initialize gdf_ad_targets_geo correctly
+    gdf_ad_targets_geo = gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:4326") # Correct initialization
     if not df_ad_targets.empty:
         merged_ads = pd.merge(df_ad_targets, gdf_us[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
-        if not merged_ads.empty: gdf_ad_targets_geo = gpd.GeoDataFrame(merged_ads, geometry='geometry', crs="EPSG:4326")
+        if not merged_ads.empty: 
+            gdf_ad_targets_geo = gpd.GeoDataFrame(merged_ads, geometry='geometry', crs="EPSG:4326")
 
-    filtered_k12_schools = gpd.GeoDataFrame(crs="EPSG:4326")
+    # Initialize filtered_k12_schools correctly
+    filtered_k12_schools = gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326") # Correct initialization
     active_school_filter_radius = 0
     if gdf_k12_schools is not None and not gdf_k12_schools.empty:
         coverage_union_for_schools = None
-        # Determine the largest active buffer for filtering schools
         filter_radius_col = None
         if show_25_mile_buffer and 'buffer_25' in gdf_input_zips_geo.columns:
             filter_radius_col = 'buffer_25'; active_school_filter_radius = 25
@@ -231,21 +233,20 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
         if coverage_union_for_schools and not coverage_union_for_schools.is_empty:
             k12_proj = gdf_k12_schools.to_crs(epsg=3857) 
             coverage_proj = gpd.GeoSeries([coverage_union_for_schools], crs="EPSG:4326").to_crs(epsg=3857).iloc[0]
-            # Use sindex for potentially faster initial query
-            possible_matches_idx = list(k12_proj.sindex.query(coverage_proj, predicate='intersects')) # intersects is safer for polygons
+            possible_matches_idx = list(k12_proj.sindex.query(coverage_proj, predicate='intersects')) 
             if possible_matches_idx:
                 candidate_schools = k12_proj.iloc[possible_matches_idx]
-                # Perform precise 'within' check on candidates
                 actually_within = candidate_schools.within(coverage_proj)
-                filtered_k12_schools = gdf_k12_schools.iloc[candidate_schools[actually_within].index]
+                # Ensure original DataFrame columns are preserved when filtering
+                filtered_k12_schools = gdf_k12_schools.iloc[candidate_schools[actually_within].index].copy()
+
 
     gdf_input_3857    = gdf_input_zips_geo.to_crs(epsg=3857)
-    gdf_ad_targets_3857 = gdf_ad_targets_geo.to_crs(epsg=3857) if not gdf_ad_targets_geo.empty else gpd.GeoDataFrame(crs="EPSG:3857")
+    gdf_ad_targets_3857 = gdf_ad_targets_geo.to_crs(epsg=3857) if not gdf_ad_targets_geo.empty else gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:3857")
     
-    # Plot all K12 schools if no filter radius is active, otherwise plot filtered ones
     gdf_k12_to_plot = filtered_k12_schools if active_school_filter_radius > 0 else \
-                      (gdf_k12_schools if gdf_k12_schools is not None else gpd.GeoDataFrame())
-    gdf_k12_plot_3857 = gdf_k12_to_plot.to_crs(epsg=3857) if not gdf_k12_to_plot.empty else gpd.GeoDataFrame(crs="EPSG:3857")
+                      (gdf_k12_schools if gdf_k12_schools is not None else gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326"))
+    gdf_k12_plot_3857 = gdf_k12_to_plot.to_crs(epsg=3857) if not gdf_k12_to_plot.empty else gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:3857")
 
 
     if show_5_mile_buffer and 'buffer_5' in gdf_input_zips_geo.columns: gdf_input_3857['buffer_5_3857']  = gpd.GeoSeries(gdf_input_zips_geo['buffer_5'], crs="EPSG:4326").to_crs(epsg=3857)
@@ -302,7 +303,7 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
 st.sidebar.header("1. Enter/Paste ZIP Codes for Analysis") 
-zip_code_input_text = st.sidebar.text_area("Paste the list of ZIP codes you want to analyze (comma, space, or newline separated). The app will map these specific ZIPs and their coverage.", height=150, key="zip_input_area_v7", # Incremented key
+zip_code_input_text = st.sidebar.text_area("Paste the list of ZIP codes you want to analyze (comma, space, or newline separated). The app will map these specific ZIPs and their coverage.", height=150, key="zip_input_area_v7", 
 help="Enter 5-digit ZIP codes.")
 
 st.sidebar.header("2. Display Options for Input ZIPs")
@@ -314,22 +315,20 @@ st.sidebar.header("3. Upload Optional Data (CSV)")
 uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v7")
 uploaded_k12_schools_file = st.sidebar.file_uploader("K-12 School Locations (Optional: name, latitude, longitude)", type="csv", key="k12_schools_v7")
 
-# Load the master US ZIP code data automatically
-# This is now done once at the beginning of the script if MASTER_ZIP_FILE_PATH is valid
-gdf_us_data = None # Initialize
-if 'gdf_us_data_loaded' not in st.session_state: # Load only once per session
+gdf_us_data = None 
+if 'gdf_us_data_loaded' not in st.session_state: 
     gdf_us_data = load_us_zip_codes(MASTER_ZIP_FILE_PATH)
     if not gdf_us_data.empty:
         st.session_state.gdf_us_data_loaded = gdf_us_data
     else:
-        st.session_state.gdf_us_data_loaded = gpd.GeoDataFrame() # Store empty if failed
+        st.session_state.gdf_us_data_loaded = gpd.GeoDataFrame() 
         st.error("Failed to load the built-in US ZIP Codes Master File. Please check the file in the repository (expected: 'us_zip_master.csv') and its format. The app cannot function without it.")
         st.stop()
 else:
     gdf_us_data = st.session_state.gdf_us_data_loaded
 
 
-if gdf_us_data.empty: # Double check, in case it failed to load into session state
+if gdf_us_data.empty: 
     st.error("US ZIP Codes Master File could not be loaded. App cannot proceed.")
     st.stop()
 
@@ -339,7 +338,7 @@ if zip_code_input_text.strip():
     
     df_input_zips_data = parse_input_zips(zip_code_input_text)
     df_ad_targets_data = load_ad_target_zips(uploaded_ad_targets_file) if uploaded_ad_targets_file else pd.DataFrame(columns=['zip'])
-    gdf_k12_schools_data = load_k12_schools(uploaded_k12_schools_file) if uploaded_k12_schools_file else gpd.GeoDataFrame()
+    gdf_k12_schools_data = load_k12_schools(uploaded_k12_schools_file) if uploaded_k12_schools_file else gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326") # Ensure schema for empty
 
     data_load_success = True
     if df_input_zips_data.empty: st.warning("No valid ZIPs parsed from input text area."); data_load_success = False 
@@ -358,7 +357,6 @@ if zip_code_input_text.strip():
             st.download_button(label="Download Map as PNG", data=img, file_name=fn, mime="image/png")
         except Exception as e: st.error(f"Error during map generation: {e}"); st.exception(e)
     elif df_input_zips_data.empty : st.warning("Provide valid ZIPs in the text area to generate map.")
-    # gdf_us_data failure is handled above with st.stop()
 else:
     st.sidebar.info("Paste ZIP codes for analysis in Section 1 to generate the map.") 
     st.info("Awaiting ZIP code input for analysis...")
