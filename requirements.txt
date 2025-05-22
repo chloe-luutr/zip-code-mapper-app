@@ -1,1 +1,9 @@
-streamlit pandas numpy geopandas contextily matplotlib pyproj shapely openpyxl
+streamlit 
+pandas 
+numpy 
+geopandas 
+contextily 
+matplotlib 
+pyproj 
+shapely 
+openpyxl
