@@ -18,8 +18,8 @@ st.set_page_config(layout="wide")
 st.title("Interactive ZIP Code Analyzer & K-12 School Mapper")
 st.markdown("""
 Paste your list of primary ZIP codes. The app will:
-- Map these **Input ZIP Codes** and their 5 & 10-mile coverage radii to help visualize potential overlaps.
-- If K-12 school data is uploaded, it will highlight schools **within the 10-mile radius of your Input ZIPs**.
+- Map these **Input ZIP Codes** and optionally their 5 & 10-mile coverage radii to help visualize potential overlaps.
+- If K-12 school data is uploaded, it will highlight schools **within the 10-mile radius of your Input ZIPs** (if 10-mile radius is displayed or K-12 schools are shown).
 - Optionally display current Ad Target ZIPs for context.
 """)
 
@@ -131,7 +131,7 @@ def create_geodesic_buffers(gdf_points, radii=(5,10)):
 ###############################################################################
 # MAIN PLOT FUNCTION
 ###############################################################################
-def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None):
+def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None, show_5_mile_buffer=True, show_10_mile_buffer=True):
     if gdf_us.empty:
         st.error("US ZIP Code reference data is essential and missing."); fig, ax = plt.subplots(); ax.text(0.5,0.5,"US ZIP Data Missing", ha='center'); return fig
     if df_input_zips.empty:
@@ -141,52 +141,68 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
     if gdf_input_zips_geo.empty:
         st.warning("None of the input ZIP codes found in US ZIP reference."); fig, ax = plt.subplots(); ax.text(0.5,0.5,"Input ZIPs not in US data", ha='center'); return fig
     gdf_input_zips_geo = gpd.GeoDataFrame(gdf_input_zips_geo, geometry='geometry', crs="EPSG:4326")
-    gdf_input_zips_geo = create_geodesic_buffers(gdf_input_zips_geo, radii=(5,10)) # Buffers for input zips
+    
+    # Create buffers only if requested
+    radii_to_create = []
+    if show_5_mile_buffer: radii_to_create.append(5)
+    if show_10_mile_buffer: radii_to_create.append(10)
+    if radii_to_create:
+        gdf_input_zips_geo = create_geodesic_buffers(gdf_input_zips_geo, radii=tuple(radii_to_create))
+
 
     gdf_ad_targets_geo = gpd.GeoDataFrame(crs="EPSG:4326")
     if not df_ad_targets.empty:
         merged_ads = pd.merge(df_ad_targets, gdf_us[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
         if not merged_ads.empty: gdf_ad_targets_geo = gpd.GeoDataFrame(merged_ads, geometry='geometry', crs="EPSG:4326")
 
-    # --- Filter K-12 schools within 10-mile radius of any input ZIP ---
+    # --- Filter K-12 schools within 10-mile radius of any input ZIP (if 10-mile buffer is active or K12 schools are to be shown) ---
     filtered_k12_schools = gpd.GeoDataFrame(crs="EPSG:4326")
-    if gdf_k12_schools is not None and not gdf_k12_schools.empty and 'buffer_10' in gdf_input_zips_geo.columns:
-        # Ensure buffer_10 is valid geometry
-        valid_input_buffers_10 = gdf_input_zips_geo['buffer_10'].dropna()
-        if not valid_input_buffers_10.empty:
-            input_zips_coverage_union = unary_union(valid_input_buffers_10.tolist())
-            if input_zips_coverage_union and not input_zips_coverage_union.is_empty:
-                # Perform spatial join or intersection
-                # Need to project both to the same projected CRS for accurate spatial operations if using .within or .intersects
-                # For simplicity and assuming k12 schools are points, checking .within is often sufficient with WGS84 if areas are not too large
-                # However, for robust solution, project:
-                k12_proj = gdf_k12_schools.to_crs(epsg=3857)
-                coverage_proj = gpd.GeoSeries([input_zips_coverage_union], crs="EPSG:4326").to_crs(epsg=3857).iloc[0]
-                
-                schools_within_indices = k12_proj.within(coverage_proj)
-                filtered_k12_schools = gdf_k12_schools[schools_within_indices]
+    if gdf_k12_schools is not None and not gdf_k12_schools.empty:
+        if show_10_mile_buffer and 'buffer_10' in gdf_input_zips_geo.columns:
+            valid_input_buffers_10 = gdf_input_zips_geo['buffer_10'].dropna()
+            if not valid_input_buffers_10.empty:
+                input_zips_coverage_union = unary_union(valid_input_buffers_10.tolist())
+                if input_zips_coverage_union and not input_zips_coverage_union.is_empty:
+                    k12_proj = gdf_k12_schools.to_crs(epsg=3857)
+                    coverage_proj = gpd.GeoSeries([input_zips_coverage_union], crs="EPSG:4326").to_crs(epsg=3857).iloc[0]
+                    schools_within_indices = k12_proj.within(coverage_proj)
+                    filtered_k12_schools = gdf_k12_schools[schools_within_indices]
+        elif not show_10_mile_buffer: # If 10-mile buffer isn't shown, but K12 is, show all K12 schools that are near input points (e.g. within a default larger radius for context)
+            # For simplicity, if 10-mile buffer isn't on, we'll just show all K12 schools that are uploaded for now.
+            # A more advanced version could filter them based on proximity to the *points* of input ZIPs.
+            # However, the current description implies K12 are highlighted *within the 10-mile radius*.
+            # So, if 10-mile radius is off, we might not show K12 or show them unfiltered.
+            # Let's stick to: K12 are shown if they fall in the 10-mile radius *if that radius is being considered*.
+            # If 10-mile is off, K12 filtering based on it is also off.
+            # We can still plot all K12 schools if the user uploaded them, regardless of buffer display.
+            pass # K12 schools will be plotted later if gdf_k12_schools is not empty
 
 
     # --- Projections ---
     gdf_input_3857    = gdf_input_zips_geo.to_crs(epsg=3857)
     gdf_ad_targets_3857 = gdf_ad_targets_geo.to_crs(epsg=3857) if not gdf_ad_targets_geo.empty else gpd.GeoDataFrame(crs="EPSG:3857")
-    gdf_k12_filtered_3857 = filtered_k12_schools.to_crs(epsg=3857) if not filtered_k12_schools.empty else gpd.GeoDataFrame(crs="EPSG:3857")
+    # Use all K12 schools for projection if no filtering happened, or filtered ones if filtering did
+    gdf_k12_to_project = filtered_k12_schools if not filtered_k12_schools.empty else (gdf_k12_schools if gdf_k12_schools is not None else gpd.GeoDataFrame())
+    gdf_k12_plot_3857 = gdf_k12_to_project.to_crs(epsg=3857) if not gdf_k12_to_project.empty else gpd.GeoDataFrame(crs="EPSG:3857")
 
-    # Project buffers for plotting
-    if 'buffer_5' in gdf_input_zips_geo.columns: gdf_input_3857['buffer_5_3857']  = gpd.GeoSeries(gdf_input_zips_geo['buffer_5'], crs="EPSG:4326").to_crs(epsg=3857)
-    if 'buffer_10' in gdf_input_zips_geo.columns: gdf_input_3857['buffer_10_3857'] = gpd.GeoSeries(gdf_input_zips_geo['buffer_10'], crs="EPSG:4326").to_crs(epsg=3857)
+
+    # Project buffers for plotting if they exist
+    if show_5_mile_buffer and 'buffer_5' in gdf_input_zips_geo.columns:
+         gdf_input_3857['buffer_5_3857']  = gpd.GeoSeries(gdf_input_zips_geo['buffer_5'], crs="EPSG:4326").to_crs(epsg=3857)
+    if show_10_mile_buffer and 'buffer_10' in gdf_input_zips_geo.columns:
+         gdf_input_3857['buffer_10_3857'] = gpd.GeoSeries(gdf_input_zips_geo['buffer_10'], crs="EPSG:4326").to_crs(epsg=3857)
 
 
     # --- Plotting ---
     fig, ax = plt.subplots(figsize=(16,13))
     
-    all_geoms_for_bounds = [gdf_input_3857, gdf_ad_targets_3857, gdf_k12_filtered_3857]
-    valid_geoms_for_bounds = [g for g in all_geoms_for_bounds if g is not None and not g.empty and g.total_bounds is not None]
+    all_geoms_for_bounds = [gdf_input_3857, gdf_ad_targets_3857, gdf_k12_plot_3857]
+    valid_geoms_for_bounds = [g for g in all_geoms_for_bounds if g is not None and not g.empty and hasattr(g, 'total_bounds') and g.total_bounds is not None]
+
 
     if not valid_geoms_for_bounds: minx, miny, maxx, maxy = -13e6, 2.5e6, -7e6, 6.5e6 # Default US
     else:
-        # Calculate combined total_bounds carefully, ensuring all are GeoDataFrames
-        bounds_list = [gdf.total_bounds for gdf in valid_geoms_for_bounds if hasattr(gdf, 'total_bounds')]
+        bounds_list = [gdf.total_bounds for gdf in valid_geoms_for_bounds]
         if not bounds_list: minx, miny, maxx, maxy = -13e6, 2.5e6, -7e6, 6.5e6
         else:
             minx = min(b[0] for b in bounds_list)
@@ -195,26 +211,29 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
             maxy = max(b[3] for b in bounds_list)
 
     w = maxx - minx if maxx > minx else 1e6; h = maxy - miny if maxy > miny else 1e6
-    pad_x, pad_y = 0.15 * w, 0.15 * h # Increased padding for better view
+    pad_x, pad_y = 0.15 * w, 0.15 * h
 
-    # 1. Input ZIPs (Primary points of interest) - Plot these first for clarity
+    # 1. Input ZIPs
     gdf_input_3857.plot(ax=ax, marker='*', color='crimson', markersize=200, label="Input ZIPs", zorder=5, edgecolor='black')
 
-    # 2. Coverage polygons for Input ZIPs (semi-transparent to show overlaps)
-    if 'buffer_5_3857' in gdf_input_3857.columns and gdf_input_3857['buffer_5_3857'].notna().any():
+    # 2. Coverage polygons for Input ZIPs (if toggled on)
+    if show_5_mile_buffer and 'buffer_5_3857' in gdf_input_3857.columns and gdf_input_3857['buffer_5_3857'].notna().any():
         gdf_input_3857[gdf_input_3857['buffer_5_3857'].notna()].plot(ax=ax, facecolor='orangered', edgecolor='orangered', alpha=0.2, linewidth=1.0, zorder=2, linestyle='--')
-    if 'buffer_10_3857' in gdf_input_3857.columns and gdf_input_3857['buffer_10_3857'].notna().any():
+    if show_10_mile_buffer and 'buffer_10_3857' in gdf_input_3857.columns and gdf_input_3857['buffer_10_3857'].notna().any():
         gdf_input_3857[gdf_input_3857['buffer_10_3857'].notna()].plot(ax=ax, facecolor='darkorange', edgecolor='darkorange', alpha=0.15, linewidth=1.5, zorder=1, linestyle=':')
 
-    # 3. Ad Target ZIPs (Optional)
+    # 3. Ad Target ZIPs
     if not gdf_ad_targets_3857.empty:
         gdf_ad_targets_3857.plot(ax=ax, marker='s', color='limegreen', markersize=70, label="Ad Target ZIPs", zorder=4, alpha=0.8, edgecolor='darkgreen')
 
-    # 4. Filtered K-12 School Locations (within 10-mile radius of input ZIPs)
-    if not gdf_k12_filtered_3857.empty:
-        gdf_k12_filtered_3857.plot(ax=ax, marker='^', color='deepskyblue', markersize=50, label="K-12 Schools (in 10mi radius of Input ZIPs)", zorder=3, alpha=0.9, edgecolor='black')
-    elif gdf_k12_schools is not None and not gdf_k12_schools.empty: # If K12 uploaded but none filtered
-        st.info("No K-12 schools found within the 10-mile radius of the input ZIP codes.")
+    # 4. K-12 School Locations
+    k12_label = "K-12 Schools"
+    if not gdf_k12_plot_3857.empty:
+        if not filtered_k12_schools.empty and show_10_mile_buffer : # Only add "filtered" context if 10-mile buffer is on and filtering happened
+             k12_label = f"K-12 Schools (in 10mi radius of Input ZIPs)"
+        gdf_k12_plot_3857.plot(ax=ax, marker='^', color='deepskyblue', markersize=50, label=k12_label, zorder=3, alpha=0.9, edgecolor='black')
+    elif gdf_k12_schools is not None and not gdf_k12_schools.empty and filtered_k12_schools.empty and show_10_mile_buffer:
+        st.info("No K-12 schools found within the 10-mile radius of the input ZIP codes (when 10-mile buffer is active).")
 
 
     try:
@@ -225,27 +244,41 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools=None
 
     handles, labels = [], []
     handles.append(mlines.Line2D([], [], color='crimson', marker='*', linestyle='None', markersize=12, label='Input ZIPs', markeredgecolor='black')); labels.append(f'Input ZIPs ({len(gdf_input_3857)})')
-    if 'buffer_5_3857' in gdf_input_3857: handles.append(mpatches.Patch(facecolor='orangered', alpha=0.3, edgecolor='orangered', linestyle='--', label='5mi Input Coverage')); labels.append('5-mile Input Coverage')
-    if 'buffer_10_3857' in gdf_input_3857: handles.append(mpatches.Patch(facecolor='darkorange', alpha=0.2, edgecolor='darkorange', linestyle=':', label='10mi Input Coverage')); labels.append('10-mile Input Coverage')
+    if show_5_mile_buffer and 'buffer_5_3857' in gdf_input_3857: handles.append(mpatches.Patch(facecolor='orangered', alpha=0.3, edgecolor='orangered', linestyle='--', label='5mi Input Coverage')); labels.append('5-mile Input Coverage')
+    if show_10_mile_buffer and 'buffer_10_3857' in gdf_input_3857: handles.append(mpatches.Patch(facecolor='darkorange', alpha=0.2, edgecolor='darkorange', linestyle=':', label='10mi Input Coverage')); labels.append('10-mile Input Coverage')
     if not gdf_ad_targets_3857.empty: handles.append(mlines.Line2D([], [], color='limegreen', marker='s', linestyle='None', markersize=8, label='Ad Target ZIPs', markeredgecolor='darkgreen')); labels.append(f'Ad Target ZIPs ({len(gdf_ad_targets_3857)})')
-    if not gdf_k12_filtered_3857.empty: handles.append(mlines.Line2D([], [], color='deepskyblue', marker='^', linestyle='None', markersize=8, label='K-12 Schools (Highlighted)', markeredgecolor='black')); labels.append(f'K-12 Schools ({len(gdf_k12_filtered_3857)} in 10mi radius)')
+    
+    if not gdf_k12_plot_3857.empty:
+        current_k12_label_for_legend = "K-12 Schools"
+        if not filtered_k12_schools.empty and show_10_mile_buffer:
+            current_k12_label_for_legend = f'K-12 Schools ({len(filtered_k12_schools)} in 10mi radius)'
+        elif not gdf_k12_plot_3857.empty : # K12 schools are plotted but not necessarily filtered
+            current_k12_label_for_legend = f'K-12 Schools ({len(gdf_k12_plot_3857)})'
+
+        handles.append(mlines.Line2D([], [], color='deepskyblue', marker='^', linestyle='None', markersize=8, label=current_k12_label_for_legend, markeredgecolor='black')); labels.append(current_k12_label_for_legend)
+
 
     if handles: ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0., fontsize='small', title="Legend", title_fontsize="medium")
     ax.set_title("Input ZIP Code Coverage & K-12 School Proximity", fontsize=16)
-    plt.tight_layout(rect=[0, 0, 0.83, 1]) # Adjust for legend
+    plt.tight_layout(rect=[0, 0, 0.83, 1]) 
     return fig
 
 ###############################################################################
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
 st.sidebar.header("1. Input Primary ZIP Codes")
-zip_code_input_text = st.sidebar.text_area("Paste your list of ZIP codes here (comma, space, or newline separated):", height=150, key="zip_input_area_v2",
-help="Enter 5-digit ZIP codes. The app will map these and their 5/10-mile coverage.")
+zip_code_input_text = st.sidebar.text_area("Paste your list of ZIP codes here (comma, space, or newline separated):", height=150, key="zip_input_area_v3",
+help="Enter 5-digit ZIP codes. The app will map these and their coverage.")
 
-st.sidebar.header("2. Upload Supporting Data (CSV)")
-uploaded_us_zips_file = st.sidebar.file_uploader("US ZIP Codes (Required: zip, latitude, longitude)", type="csv", key="us_zips_v2")
-uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v2")
-uploaded_k12_schools_file = st.sidebar.file_uploader("K-12 School Locations (Optional: name, latitude, longitude)", type="csv", key="k12_schools_v2")
+st.sidebar.header("2. Display Options")
+show_5_mile = st.sidebar.checkbox("Show 5-mile radius for Input ZIPs", value=True, key="show_5_v3")
+show_10_mile = st.sidebar.checkbox("Show 10-mile radius for Input ZIPs", value=True, key="show_10_v3")
+
+
+st.sidebar.header("3. Upload Supporting Data (CSV)")
+uploaded_us_zips_file = st.sidebar.file_uploader("US ZIP Codes (Required: zip, latitude, longitude)", type="csv", key="us_zips_v3")
+uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v3")
+uploaded_k12_schools_file = st.sidebar.file_uploader("K-12 School Locations (Optional: name, latitude, longitude)", type="csv", key="k12_schools_v3")
 
 if uploaded_us_zips_file and zip_code_input_text.strip():
     st.sidebar.success("Core inputs provided!")
@@ -257,25 +290,26 @@ if uploaded_us_zips_file and zip_code_input_text.strip():
 
     data_load_success = True
     if gdf_us_data.empty: st.error("US ZIP codes data is essential and failed to load."); data_load_success = False
-    if df_input_zips_data.empty: st.warning("No valid primary ZIP codes parsed from input. Map cannot be generated without them."); data_load_success = False # Make this critical too
+    if df_input_zips_data.empty: st.warning("No valid primary ZIP codes parsed from input. Map cannot be generated without them."); data_load_success = False
     
-    if uploaded_ad_targets_file and df_ad_targets_data.empty: st.warning("Problem loading 'Ad Target ZIPs'. It will be excluded.")
-    if uploaded_k12_schools_file and gdf_k12_schools_data.empty and uploaded_k12_schools_file is not None: # only warn if file was actually uploaded but failed
+    if uploaded_ad_targets_file and df_ad_targets_data.empty and uploaded_ad_targets_file is not None : st.warning("Problem loading 'Ad Target ZIPs'. It will be excluded.")
+    if uploaded_k12_schools_file and gdf_k12_schools_data.empty and uploaded_k12_schools_file is not None: 
         st.warning("Problem loading 'K-12 School Locations'. It will be excluded.")
 
 
     if data_load_success:
         st.info("Data loaded. Generating map...")
         try:
-            map_figure = generate_map_plot(gdf_us_data, df_input_zips_data, df_ad_targets_data, gdf_k12_schools_data)
+            map_figure = generate_map_plot(gdf_us_data, df_input_zips_data, df_ad_targets_data, gdf_k12_schools_data,
+                                           show_5_mile_buffer=show_5_mile, show_10_mile_buffer=show_10_mile)
             st.pyplot(map_figure)
             st.success("Map generated successfully!")
-            fn = 'zip_analysis_map_v2.png'; img = io.BytesIO()
+            fn = 'zip_analysis_map_v3.png'; img = io.BytesIO()
             map_figure.savefig(img, format='png', dpi=300, bbox_inches='tight')
             st.download_button(label="Download Map as PNG", data=img, file_name=fn, mime="image/png")
         except Exception as e:
             st.error(f"An error occurred during map generation: {e}"); st.exception(e)
-    elif not gdf_us_data.empty and df_input_zips_data.empty : # US Zips loaded but no input zips
+    elif not gdf_us_data.empty and df_input_zips_data.empty : 
          st.warning("Please provide valid primary ZIP codes in the text area to generate the map.")
     else:
         st.warning("Map could not be generated due to critical data loading issues.")
