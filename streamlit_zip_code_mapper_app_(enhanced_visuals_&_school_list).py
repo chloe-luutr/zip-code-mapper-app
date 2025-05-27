@@ -393,5 +393,3 @@ else:
     st.info("Awaiting inputs...")
 
 st.markdown("---")
-# Removed the specific line about replicating zip-code-maper.py for a cleaner look
-st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic.")
