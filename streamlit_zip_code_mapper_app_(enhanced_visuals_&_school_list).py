@@ -365,7 +365,7 @@ st.session_state.num_grid_ticks_orig_v3 = st.sidebar.slider("Number of Lat/Lon G
 gdf_us_data = load_us_zip_codes_from_repo(MASTER_ZIP_FILE_PATH)
 
 if gdf_us_data.empty:
-    st.error("FATAL: Could not load US ZIP Codes Master File from repository. App cannot proceed. Ensure 'us_zip_master.csv' is in the GitHub repository and correctly formatted.")
+    st.error("ERROR: Could not load US ZIP Codes Master File from repository. App cannot proceed. Ensure 'us_zip_master.csv' is in the GitHub repository and correctly formatted.")
     st.stop()
 
 # Main app logic: now only needs Ad Target ZIPs (text) and School Open Roles (upload)
@@ -393,3 +393,5 @@ else:
     st.info("Awaiting inputs...")
 
 st.markdown("---")
+# Removed the specific line about replicating zip-code-maper.py for a cleaner look
+st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic.")
