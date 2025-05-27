@@ -96,17 +96,12 @@ def load_k12_schools_cached(csv_file_path: Path) -> gpd.GeoDataFrame:
 
 def load_ad_target_zips(uploaded_file_object) -> pd.DataFrame:
     if uploaded_file_object is None: return pd.DataFrame(columns=['zip'])
-    # Simplified parsing, assuming a single column of zips or a 'zip' header
     try:
         df = pd.read_csv(uploaded_file_object, dtype=str)
         df.columns = df.columns.str.strip().str.lower()
-        if 'zip' in df.columns:
-            df_final = df[['zip']]
-        elif df.shape[1] == 1: # Assume first column is zips if only one column
-            df_final = df.rename(columns={df.columns[0]: 'zip'})[['zip']]
-        else:
-            st.error("Ad Target ZIPs CSV: Could not find 'zip' column or parse as a simple list.")
-            return pd.DataFrame(columns=['zip'])
+        if 'zip' in df.columns: df_final = df[['zip']]
+        elif df.shape[1] == 1: df_final = df.rename(columns={df.columns[0]: 'zip'})[['zip']]
+        else: st.error("Ad Target ZIPs CSV: Could not find 'zip' column or parse as a simple list."); return pd.DataFrame(columns=['zip'])
         df_final['zip'] = df_final['zip'].str.zfill(5).str.strip()
         df_final = df_final[df_final['zip'].str.match(r'^\d{5}$')].drop_duplicates()
         return df_final
@@ -117,13 +112,13 @@ def parse_input_zips(zip_code_text_input: str) -> pd.DataFrame:
     zips = [z.strip() for z in pd.Series(zip_code_text_input.splitlines()).str.split(r'[\s,]+').explode() if z.strip().isdigit()]
     valid_zips = [z.zfill(5) for z in zips if len(z.zfill(5)) == 5]
     if not valid_zips: st.warning("No valid 5-digit ZIP codes found in input."); return pd.DataFrame(columns=['zip'])
-    return pd.DataFrame(list(set(valid_zips)), columns=['zip']) # Use set for unique
+    return pd.DataFrame(list(set(valid_zips)), columns=['zip'])
 
 def geodesic_buffer(lon, lat, miles):
     radius_m = miles * 1609.34; wgs84 = pyproj.CRS("EPSG:4326")
     aeqd_proj_str = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
     try: aeqd_proj = pyproj.CRS.from_proj4(aeqd_proj_str)
-    except pyproj.exceptions.CRSError: return Point(lon, lat).buffer(radius_m / 111000) # Fallback
+    except pyproj.exceptions.CRSError: return Point(lon, lat).buffer(radius_m / 111000) 
     project_fwd  = pyproj.Transformer.from_crs(wgs84, aeqd_proj,  always_xy=True).transform
     project_back = pyproj.Transformer.from_crs(aeqd_proj, wgs84,  always_xy=True).transform
     return transform(project_back, transform(project_fwd, Point(lon, lat)).buffer(radius_m))
@@ -131,69 +126,77 @@ def geodesic_buffer(lon, lat, miles):
 def create_geodesic_buffers(gdf_points, radius_miles=0): 
     if gdf_points.empty or 'geometry' not in gdf_points.columns or radius_miles == 0: return gdf_points
     col_name = f"buffer_{radius_miles}"
-    poly_list = [geodesic_buffer(row.geometry.x, row.geometry.y, radius_miles) if row.geometry else None for _, row in gdf_points.iterrows()]
-    gdf_points[col_name] = gpd.GeoSeries(poly_list, crs="EPSG:4326")
+    if col_name not in gdf_points.columns or not gdf_points[col_name].apply(lambda x: isinstance(x, (Point, MultiPolygon))).all():
+        poly_list = [geodesic_buffer(row.geometry.x, row.geometry.y, radius_miles) if row.geometry and isinstance(row.geometry, Point) else None for _, row in gdf_points.iterrows()]
+        gdf_points[col_name] = gpd.GeoSeries(poly_list, crs="EPSG:4326")
     return gdf_points
 
 def suggest_optimal_zips(gdf_input_zips_geo: gpd.GeoDataFrame, num_recommendations: int, radius_miles: int = 25) -> gpd.GeoDataFrame:
-    if gdf_input_zips_geo.empty or 'geometry' not in gdf_input_zips_geo.columns:
-        return gpd.GeoDataFrame()
+    if gdf_input_zips_geo.empty or 'geometry' not in gdf_input_zips_geo.columns or num_recommendations == 0:
+        return gpd.GeoDataFrame(columns=gdf_input_zips_geo.columns if not gdf_input_zips_geo.empty else ['zip', 'geometry'])
 
-    # Create 25-mile buffers for all input zips for coverage calculation
-    # Ensure it's done on a projected CRS for accurate area/overlap if needed, but here for point coverage
     temp_gdf = gdf_input_zips_geo.copy()
     temp_gdf = create_geodesic_buffers(temp_gdf, radius_miles=radius_miles)
     buffer_col = f'buffer_{radius_miles}'
-    if buffer_col not in temp_gdf.columns: return gpd.GeoDataFrame() # Buffers failed
+    if buffer_col not in temp_gdf.columns or temp_gdf[buffer_col].isnull().all(): 
+        st.warning(f"Could not generate {radius_miles}-mile buffers for recommendation. Skipping recommendation.")
+        return gpd.GeoDataFrame(columns=gdf_input_zips_geo.columns)
 
-    all_input_points = temp_gdf.geometry.copy() # These are the centers of input ZIPs
-    covered_points_indices = set()
+    all_input_points_gdf = temp_gdf[['zip', 'geometry']].copy() 
+    if not all(isinstance(geom, Point) for geom in all_input_points_gdf.geometry):
+        all_input_points_gdf = all_input_points_gdf[all_input_points_gdf.geometry.apply(lambda x: isinstance(x, Point))]
+        if all_input_points_gdf.empty: return gpd.GeoDataFrame(columns=gdf_input_zips_geo.columns)
+
+    covered_input_zips_indices = set() 
     recommended_zips_indices = []
+    temp_gdf_proj = temp_gdf.to_crs(epsg=3857)
+    all_input_points_proj = all_input_points_gdf.to_crs(epsg=3857)
+    # Ensure the buffer column is also projected if it exists and contains geometries
+    if buffer_col in temp_gdf_proj.columns and not temp_gdf_proj[buffer_col].isnull().all():
+         temp_gdf_proj[buffer_col] = temp_gdf_proj[buffer_col].to_crs(epsg=3857)
+    else: # If buffer column is missing or all null after projection attempt
+        st.warning(f"Projected {radius_miles}-mile buffers are invalid. Skipping recommendation.")
+        return gpd.GeoDataFrame(columns=gdf_input_zips_geo.columns)
 
-    for _ in range(num_recommendations):
-        best_candidate_idx = -1
-        max_newly_covered = -1
 
-        # Find the input ZIP (not yet recommended) that covers the most *new* input ZIP centers
-        for idx, row in temp_gdf.iterrows():
-            if idx in recommended_zips_indices:
-                continue # Already recommended
-
-            current_buffer = row[buffer_col]
-            if current_buffer is None or current_buffer.is_empty:
-                continue
-            
-            # Count how many *not-yet-covered* input points this buffer covers
+    for i in range(num_recommendations):
+        best_candidate_idx = -1; max_newly_covered = -1
+        candidate_indices_to_check = [idx for idx in temp_gdf_proj.index if idx not in recommended_zips_indices]
+        if not candidate_indices_to_check: break
+        for idx in candidate_indices_to_check:
+            current_buffer_proj = temp_gdf_proj.loc[idx, buffer_col]
+            if current_buffer_proj is None or current_buffer_proj.is_empty: continue
             newly_covered_count = 0
-            for point_idx, point_geom in all_input_points.items():
-                if point_idx not in covered_points_indices and point_geom.within(current_buffer):
-                    newly_covered_count += 1
-            
+            points_to_check_coverage_for = all_input_points_proj[~all_input_points_proj.index.isin(covered_input_zips_indices)]
+            if not points_to_check_coverage_for.empty:
+                possible_matches_indices = list(points_to_check_coverage_for.sindex.query(current_buffer_proj, predicate='intersects'))
+                if possible_matches_indices:
+                    actually_within = points_to_check_coverage_for.iloc[possible_matches_indices].within(current_buffer_proj)
+                    newly_covered_count = actually_within.sum()
             if newly_covered_count > max_newly_covered:
-                max_newly_covered = newly_covered_count
-                best_candidate_idx = idx
+                max_newly_covered = newly_covered_count; best_candidate_idx = idx
         
-        if best_candidate_idx != -1 and max_newly_covered > 0 : # Found a good candidate
+        if best_candidate_idx != -1 and (max_newly_covered > 0 or (max_newly_covered == 0 and not recommended_zips_indices)):
             recommended_zips_indices.append(best_candidate_idx)
-            # Mark points covered by this new recommendation
-            best_candidate_buffer = temp_gdf.loc[best_candidate_idx, buffer_col]
-            for point_idx, point_geom in all_input_points.items():
-                 if point_idx not in covered_points_indices and point_geom.within(best_candidate_buffer):
-                    covered_points_indices.add(point_idx)
-        else:
-            break # No more candidates that cover new points, or no candidates left
-
-    if not recommended_zips_indices: return gpd.GeoDataFrame()
-    return gdf_input_zips_geo.loc[recommended_zips_indices].copy()
-
+            best_candidate_buffer_proj = temp_gdf_proj.loc[best_candidate_idx, buffer_col]
+            points_to_mark_covered = all_input_points_proj[~all_input_points_proj.index.isin(covered_input_zips_indices)]
+            if not points_to_mark_covered.empty:
+                possible_matches_to_mark_indices = list(points_to_mark_covered.sindex.query(best_candidate_buffer_proj, predicate='intersects'))
+                if possible_matches_to_mark_indices:
+                    actually_within_to_mark = points_to_mark_covered.iloc[possible_matches_to_mark_indices].within(best_candidate_buffer_proj)
+                    indices_newly_covered = points_to_mark_covered.iloc[possible_matches_to_mark_indices][actually_within_to_mark].index
+                    covered_input_zips_indices.update(indices_newly_covered)
+            covered_input_zips_indices.add(best_candidate_idx)
+        else: break 
+    if not recommended_zips_indices: return gpd.GeoDataFrame(columns=gdf_input_zips_geo.columns)
+    return gdf_input_zips_geo.loc[recommended_zips_indices].reset_index(drop=True)
 
 ###############################################################################
 # MAIN PLOT FUNCTION
 ###############################################################################
 def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools_repo=None, 
                       primary_radius_miles=0, show_legend=True,
-                      gdf_recommended_zips=None): # Added gdf_recommended_zips
-    
+                      gdf_recommended_zips=None): 
     plotted_school_names = [] 
     if gdf_us.empty: fig, ax = plt.subplots(); ax.text(0.5,0.5,"US ZIP Data Missing", ha='center'); return fig, plotted_school_names
     if df_input_zips.empty: fig, ax = plt.subplots(); ax.text(0.5,0.5,"Enter ZIPs for Analysis", ha='center'); return fig, plotted_school_names
@@ -202,18 +205,15 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools_repo
     if gdf_input_zips_geo.empty: fig, ax = plt.subplots(); ax.text(0.5,0.5,"Input ZIPs not in US data", ha='center'); return fig, plotted_school_names
     gdf_input_zips_geo = gpd.GeoDataFrame(gdf_input_zips_geo, geometry='geometry', crs="EPSG:4326")
     
-    # Create primary buffer for ALL input zips if a radius is selected
-    if primary_radius_miles > 0:
+    if primary_radius_miles > 0: # Create primary buffer for ALL input zips
         gdf_input_zips_geo = create_geodesic_buffers(gdf_input_zips_geo, radius_miles=primary_radius_miles)
 
-    # If recommendations are active, prepare their 25-mile buffers for distinct plotting
     gdf_recommended_zips_with_25mi_buffer = gpd.GeoDataFrame()
     if gdf_recommended_zips is not None and not gdf_recommended_zips.empty:
-        gdf_recommended_zips_with_25mi_buffer = pd.merge(gdf_recommended_zips[['zip']], gdf_us[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
-        if not gdf_recommended_zips_with_25mi_buffer.empty:
-            gdf_recommended_zips_with_25mi_buffer = gpd.GeoDataFrame(gdf_recommended_zips_with_25mi_buffer, geometry='geometry', crs="EPSG:4326")
+        gdf_recommended_zips_with_geo = pd.merge(gdf_recommended_zips[['zip']], gdf_us[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
+        if not gdf_recommended_zips_with_geo.empty:
+            gdf_recommended_zips_with_25mi_buffer = gpd.GeoDataFrame(gdf_recommended_zips_with_geo, geometry='geometry', crs="EPSG:4326")
             gdf_recommended_zips_with_25mi_buffer = create_geodesic_buffers(gdf_recommended_zips_with_25mi_buffer, radius_miles=25)
-
 
     gdf_ad_targets_geo = gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:4326") 
     if not df_ad_targets.empty:
@@ -222,11 +222,15 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools_repo
 
     filtered_k12_schools = gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:4326")
     active_school_filter_radius = 0
-    coverage_source_gdf = gdf_recommended_zips_with_25mi_buffer if gdf_recommended_zips is not None and not gdf_recommended_zips.empty and 'buffer_25' in gdf_recommended_zips_with_25mi_buffer else gdf_input_zips_geo
-    radius_col_for_school_filter = f'buffer_{25 if gdf_recommended_zips is not None and not gdf_recommended_zips.empty else primary_radius_miles}'
-    
-    if gdf_k12_schools_repo is not None and not gdf_k12_schools_repo.empty and radius_col_for_school_filter in coverage_source_gdf.columns and primary_radius_miles > 0 :
-        valid_buffers = coverage_source_gdf[radius_col_for_school_filter].dropna()
+    school_filter_source_gdf = gdf_input_zips_geo
+    school_filter_radius_for_logic = primary_radius_miles
+    if gdf_recommended_zips is not None and not gdf_recommended_zips.empty and 'buffer_25' in gdf_recommended_zips_with_25mi_buffer.columns:
+        school_filter_source_gdf = gdf_recommended_zips_with_25mi_buffer
+        school_filter_radius_for_logic = 25
+    radius_col_for_school_filter = f'buffer_{school_filter_radius_for_logic}'
+    if gdf_k12_schools_repo is not None and not gdf_k12_schools_repo.empty and \
+       radius_col_for_school_filter in school_filter_source_gdf.columns and school_filter_radius_for_logic > 0:
+        valid_buffers = school_filter_source_gdf[radius_col_for_school_filter].dropna()
         if not valid_buffers.empty:
             coverage_union_for_schools = unary_union(valid_buffers.tolist())
             if coverage_union_for_schools and not coverage_union_for_schools.is_empty:
@@ -237,65 +241,59 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools_repo
                     candidate_schools = k12_proj.iloc[possible_matches_idx]
                     actually_within = candidate_schools.within(coverage_proj)
                     filtered_k12_schools = gdf_k12_schools_repo.iloc[candidate_schools[actually_within].index].copy()
-                    active_school_filter_radius = 25 if gdf_recommended_zips is not None and not gdf_recommended_zips.empty else primary_radius_miles
+                    active_school_filter_radius = school_filter_radius_for_logic
 
-
-    # --- Projections ---
     gdf_input_3857    = gdf_input_zips_geo.to_crs(epsg=3857)
     gdf_ad_targets_3857 = gdf_ad_targets_geo.to_crs(epsg=3857) if not gdf_ad_targets_geo.empty else gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:3857")
     gdf_k12_plot_3857 = filtered_k12_schools.to_crs(epsg=3857) if not filtered_k12_schools.empty else \
                        (gdf_k12_schools_repo.to_crs(epsg=3857) if (gdf_k12_schools_repo is not None and not gdf_k12_schools_repo.empty and active_school_filter_radius == 0) \
                         else gpd.GeoDataFrame(columns=['name', 'geometry'], crs="EPSG:3857"))
-    gdf_recommended_3857 = gdf_recommended_zips_with_25mi_buffer.to_crs(epsg=3857) if not gdf_recommended_zips_with_25mi_buffer.empty else gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:3857")
+    gdf_recommended_buffers_3857 = gdf_recommended_zips_with_25mi_buffer.to_crs(epsg=3857) if not gdf_recommended_zips_with_25mi_buffer.empty else gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:3857")
 
-
-    # Project primary buffer for all input zips
-    primary_buffer_col_3857 = None
+    primary_buffer_col_3857 = f'buffer_{primary_radius_miles}_3857' if primary_radius_miles > 0 else None
     if primary_radius_miles > 0 and f'buffer_{primary_radius_miles}' in gdf_input_zips_geo.columns:
-        primary_buffer_col_3857 = f'buffer_{primary_radius_miles}_3857'
         gdf_input_3857[primary_buffer_col_3857] = gpd.GeoSeries(gdf_input_zips_geo[f'buffer_{primary_radius_miles}'], crs="EPSG:4326").to_crs(epsg=3857)
-    
-    # Project 25-mile buffer specifically for recommended zips if they exist
-    if 'buffer_25' in gdf_recommended_3857.columns: # gdf_recommended_zips_with_25mi_buffer was projected
-         gdf_recommended_3857['buffer_25_3857'] = gdf_recommended_3857['buffer_25'] # Already projected
+    if 'buffer_25' in gdf_recommended_buffers_3857.columns: 
+         gdf_recommended_buffers_3857['buffer_25_3857'] = gdf_recommended_buffers_3857['buffer_25'] 
 
     fig, ax = plt.subplots(figsize=(16,13))
-    all_geoms_for_bounds = [gdf_input_3857, gdf_ad_targets_3857, gdf_k12_plot_3857, gdf_recommended_3857]
-    # ... (rest of bounds calculation as before) ...
+    all_geoms_for_bounds = [gdf_input_3857, gdf_ad_targets_3857, gdf_k12_plot_3857, gdf_recommended_buffers_3857]
     valid_geoms_for_bounds = [g for g in all_geoms_for_bounds if g is not None and not g.empty and hasattr(g, 'total_bounds') and g.total_bounds is not None]
     if not valid_geoms_for_bounds: minx, miny, maxx, maxy = -13e6, 2.5e6, -7e6, 6.5e6
     else:
         bounds_list = [gdf.total_bounds for gdf in valid_geoms_for_bounds]; minx, miny, maxx, maxy = (min(b[0] for b in bounds_list), min(b[1] for b in bounds_list), max(b[2] for b in bounds_list), max(b[3] for b in bounds_list)) if bounds_list else (-13e6, 2.5e6, -7e6, 6.5e6)
     w = maxx - minx if maxx > minx else 1e6; h = maxy - miny if maxy > miny else 1e6; pad_x, pad_y = 0.15 * w, 0.15 * h
 
+    buffer_plot_styles = { # Renamed for clarity
+        0: None, # No buffer style
+        5:  {'facecolor':'red', 'edgecolor':'darkred', 'alpha':0.3, 'linewidth':0.7, 'zorder':20},
+        10: {'facecolor':'yellow', 'edgecolor':'#B8860B', 'alpha':0.3, 'linewidth':0.7, 'zorder':15}, # DarkGoldenrod
+        25: {'facecolor':'lightseagreen', 'edgecolor':'darkcyan', 'alpha':0.25, 'linewidth':0.7, 'zorder':10}
+    }
 
-    # Plot primary buffers for ALL input ZIPs if selected
-    buffer_colors = {5: ('red', 'darkred', 0.25), 10: ('yellow', 'orange', 0.25), 25: ('lightseagreen', 'darkcyan', 0.2)}
+    # Plot primary radius buffers for ALL input ZIPs (if not in recommendation mode for this radius)
     if primary_radius_miles > 0 and primary_buffer_col_3857 and gdf_input_3857[primary_buffer_col_3857].notna().any():
-        if gdf_recommended_zips is None or gdf_recommended_zips.empty: # Only plot all if not in recommendation mode for this radius
-            color_face, color_edge, alpha_val = buffer_colors.get(primary_radius_miles, ('gray', 'black', 0.2))
-            gdf_input_3857[gdf_input_3857[primary_buffer_col_3857].notna()].plot(
-                ax=ax, facecolor=color_face, edgecolor=color_edge, alpha=alpha_val, 
-                linewidth=0.5, zorder=primary_radius_miles # Simple zorder based on size
-            )
+        if not (gdf_recommended_zips is not None and not gdf_recommended_zips.empty and primary_radius_miles == 25):
+            style = buffer_plot_styles.get(primary_radius_miles)
+            if style: gdf_input_3857[gdf_input_3857[primary_buffer_col_3857].notna()].plot(ax=ax, **style)
     
-    # Plot 25-mile buffers for RECOMMENDED ZIPs if recommendations are active
-    if gdf_recommended_zips is not None and not gdf_recommended_zips.empty and 'buffer_25_3857' in gdf_recommended_3857.columns and gdf_recommended_3857['buffer_25_3857'].notna().any():
-        color_face, color_edge, alpha_val = buffer_colors.get(25)
-        gdf_recommended_3857[gdf_recommended_3857['buffer_25_3857'].notna()].plot(
-            ax=ax, facecolor=color_face, edgecolor=color_edge, alpha=alpha_val + 0.1, # Make recommended buffers slightly more prominent
-            linewidth=1, zorder=26 # Ensure these are prominent
-        )
+    # Plot 25-mile buffers ONLY for RECOMMENDED ZIPs if recommendations are active
+    if gdf_recommended_zips is not None and not gdf_recommended_zips.empty and \
+       'buffer_25_3857' in gdf_recommended_buffers_3857.columns and \
+       gdf_recommended_buffers_3857['buffer_25_3857'].notna().any():
+        style = buffer_plot_styles.get(25)
+        if style:
+            rec_style = style.copy()
+            rec_style['alpha'] = style['alpha'] + 0.15 # Make recommended buffers more prominent
+            rec_style['linewidth'] = 1.2
+            rec_style['zorder'] = 26 
+            gdf_recommended_buffers_3857[gdf_recommended_buffers_3857['buffer_25_3857'].notna()].plot(ax=ax, **rec_style)
 
-    # Plot Input ZIPs (all of them)
-    gdf_input_3857.plot(ax=ax, marker='o', color='red', markersize=50, label="Input ZIPs", zorder=30, edgecolor='black', linewidth=0.5)
-
-    # Highlight Recommended ZIPs
+    gdf_input_3857.plot(ax=ax, marker='o', color='red', markersize=60, label="Input ZIPs", zorder=30, edgecolor='black', linewidth=0.5)
     if gdf_recommended_zips is not None and not gdf_recommended_zips.empty:
-        # Get the geometries of recommended zips from gdf_input_3857 to plot them
         recommended_plot_gdf = gdf_input_3857[gdf_input_3857['zip'].isin(gdf_recommended_zips['zip'])]
         if not recommended_plot_gdf.empty:
-            recommended_plot_gdf.plot(ax=ax, marker='*', color='blue', markersize=350, label="Recommended Optimal ZIPs", zorder=35, edgecolor='white', linewidth=0.7)
+            recommended_plot_gdf.plot(ax=ax, marker='*', color='blue', markersize=450, label="Recommended Optimal ZIPs", zorder=35, edgecolor='white', linewidth=0.7)
         
     if not gdf_ad_targets_3857.empty: gdf_ad_targets_3857.plot(ax=ax, marker='s', color='limegreen', markersize=70, label="Ad Target ZIPs", zorder=28, alpha=0.8, edgecolor='darkgreen')
     
@@ -319,15 +317,13 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools_repo
              handles.append(mlines.Line2D([], [], color='blue', marker='*', linestyle='None', markersize=12, label='Recommended Optimal ZIPs', markeredgecolor='white')); labels.append(f'Recommended Optimal ({len(gdf_recommended_zips)})')
 
         if primary_radius_miles > 0 and primary_buffer_col_3857:
-            color_face, color_edge, alpha_val = buffer_colors.get(primary_radius_miles)
-            handles.append(mpatches.Patch(facecolor=color_face, alpha=alpha_val, edgecolor=color_edge, label=f'{primary_radius_miles}mi Input Coverage')); labels.append(f'{primary_radius_miles}-mile Input Coverage')
+            if not (gdf_recommended_zips is not None and not gdf_recommended_zips.empty and primary_radius_miles == 25):
+                style = buffer_plot_styles.get(primary_radius_miles)
+                if style: handles.append(mpatches.Patch(facecolor=style['facecolor'], alpha=style['alpha'], edgecolor=style['edgecolor'], label=f'{primary_radius_miles}mi Input Coverage')); labels.append(f'{primary_radius_miles}-mile Input Coverage')
         
-        # Add legend for recommended 25-mile buffers if they are shown distinctly
-        if gdf_recommended_zips is not None and not gdf_recommended_zips.empty and 'buffer_25_3857' in gdf_recommended_3857.columns:
-            if primary_radius_miles != 25: # Only add if not already covered by primary radius legend
-                color_face_rec, color_edge_rec, alpha_val_rec = buffer_colors.get(25)
-                handles.append(mpatches.Patch(facecolor=color_face_rec, alpha=alpha_val_rec + 0.1, edgecolor=color_edge_rec, label='25mi Recommended Coverage')); labels.append('25-mile Recommended Coverage')
-
+        if gdf_recommended_zips is not None and not gdf_recommended_zips.empty and 'buffer_25_3857' in gdf_recommended_buffers_3857.columns:
+            style_rec = buffer_plot_styles.get(25)
+            if style_rec: handles.append(mpatches.Patch(facecolor=style_rec['facecolor'], alpha=style_rec['alpha'] + 0.1, edgecolor=style_rec['edgecolor'], label='25mi Recommended Coverage')); labels.append('25-mile Recommended Coverage')
 
         if not gdf_ad_targets_3857.empty: handles.append(mlines.Line2D([], [], color='limegreen', marker='s', linestyle='None', markersize=8, label='Ad Target ZIPs', markeredgecolor='darkgreen')); labels.append(f'Ad Target ZIPs ({len(gdf_ad_targets_3857)})')
         if not gdf_k12_plot_3857.empty:
@@ -342,25 +338,26 @@ def generate_map_plot(gdf_us, df_input_zips, df_ad_targets, gdf_k12_schools_repo
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
 st.sidebar.header("1. Enter/Paste ZIP Codes for Analysis") 
-zip_code_input_text = st.sidebar.text_area("Paste list of ZIP codes to analyze (comma, space, or newline separated).", height=150, key="zip_input_area_v9")
+zip_code_input_text = st.sidebar.text_area("Paste list of ZIP codes to analyze (comma, space, or newline separated).", height=150, key="zip_input_area_v11") # Key incremented
 
 st.sidebar.header("2. Display Options")
-selected_radius = st.sidebar.radio(
-    "Select Primary Coverage Radius for Input ZIPs:",
+# Radio button for selecting one primary radius or no buffer
+selected_radius_display = st.sidebar.radio(
+    "Select Coverage Radius to Display for Input ZIPs:",
     options=[0, 5, 10, 25], 
-    format_func=lambda x: f"{x}-mile radius" if x > 0 else "No Buffer",
-    index=2, key="radius_select_v9" # Default to 10 miles
+    format_func=lambda x: f"{x}-mile radius" if x > 0 else "No Buffer (Show ZIP points only)",
+    index=2, key="radius_select_v11" 
 )
-show_map_legend = st.sidebar.checkbox("Show Map Legend", value=True, key="show_legend_v9")
+show_map_legend_toggle = st.sidebar.checkbox("Show Map Legend", value=True, key="show_legend_v11") # Legend toggle
 
 st.sidebar.header("3. Suggest Optimal ZIPs (25-mile Ad Range)")
-run_recommendation = st.sidebar.checkbox("Suggest Optimal Input ZIPs", value=False, key="run_rec_v9")
-num_to_recommend = 7 # Default
-if run_recommendation:
-    num_to_recommend = st.sidebar.number_input("Number of ZIPs to suggest (3-15):", min_value=3, max_value=15, value=7, step=1, key="num_rec_v9")
+run_recommendation_toggle = st.sidebar.checkbox("Suggest Optimal Input ZIPs", value=False, key="run_rec_v11")
+num_to_recommend_input = 7 
+if run_recommendation_toggle:
+    num_to_recommend_input = st.sidebar.number_input("Number of ZIPs to suggest (3-15):", min_value=3, max_value=15, value=7, step=1, key="num_rec_v11")
 
 st.sidebar.header("4. Upload Optional Ad Target ZIPs (CSV)") 
-uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v9")
+uploaded_ad_targets_file = st.sidebar.file_uploader("Ad Target ZIPs (Optional: zip)", type="csv", key="ad_targets_v11")
 
 # Load master data
 if 'gdf_us_data_loaded' not in st.session_state:
@@ -378,38 +375,38 @@ if zip_code_input_text.strip():
     df_input_zips_data = parse_input_zips(zip_code_input_text)
     df_ad_targets_data = load_ad_target_zips(uploaded_ad_targets_file) if uploaded_ad_targets_file else pd.DataFrame(columns=['zip'])
     
-    recommended_zips_df = None
-    if run_recommendation and not df_input_zips_data.empty:
-        # Merge with geo data to pass to suggestion function
+    recommended_zips_df_output = None 
+    if run_recommendation_toggle and not df_input_zips_data.empty:
         gdf_input_for_rec = pd.merge(df_input_zips_data, gdf_us_data[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
         if not gdf_input_for_rec.empty:
             gdf_input_for_rec = gpd.GeoDataFrame(gdf_input_for_rec, geometry='geometry', crs="EPSG:4326")
-            recommended_zips_df = suggest_optimal_zips(gdf_input_for_rec, num_to_recommend, radius_miles=25) # Use 25 miles for recommendation logic
+            recommended_zips_df_output = suggest_optimal_zips(gdf_input_for_rec, num_to_recommend_input, radius_miles=25)
 
     if not df_input_zips_data.empty:
         st.info("Data ready. Generating map...")
         try:
             map_figure, plotted_schools = generate_map_plot(
                 gdf_us_data, df_input_zips_data, df_ad_targets_data, gdf_k12_schools_repo_data,
-                primary_radius_miles=selected_radius, 
-                show_legend=show_map_legend,
-                gdf_recommended_zips=recommended_zips_df
+                primary_radius_miles=selected_radius_display, 
+                show_legend=show_map_legend_toggle,
+                gdf_recommended_zips=recommended_zips_df_output 
             )
             st.pyplot(map_figure)
             st.success("Map generated successfully!")
 
-            if recommended_zips_df is not None and not recommended_zips_df.empty:
-                st.subheader(f"Top {len(recommended_zips_df)} Recommended Optimal Input ZIPs (for 25-mile efficiency):")
-                st.dataframe(recommended_zips_df[['zip']], height=min(300, (len(recommended_zips_df) + 1) * 35))
+            if recommended_zips_df_output is not None and not recommended_zips_df_output.empty:
+                st.subheader(f"Top {len(recommended_zips_df_output)} Recommended Optimal Input ZIPs (for 25-mile efficiency):")
+                # Display only the 'zip' column from the recommended_zips_df_output
+                st.dataframe(recommended_zips_df_output[['zip']].reset_index(drop=True), height=min(300, (len(recommended_zips_df_output) + 1) * 35))
             
             if plotted_schools:
                 st.subheader(f"K-12 Schools Plotted ({len(plotted_schools)}):")
                 school_df_to_display = pd.DataFrame(plotted_schools, columns=["School Name"])
                 st.dataframe(school_df_to_display, height=min(300, (len(plotted_schools) + 1) * 35))
-            elif gdf_k12_schools_repo_data is not None and not gdf_k12_schools_repo_data.empty and selected_radius > 0 :
-                 st.info(f"No K-12 schools from built-in list found within selected {selected_radius}-mile radius of input ZIPs.")
+            elif gdf_k12_schools_repo_data is not None and not gdf_k12_schools_repo_data.empty and selected_radius_display > 0 :
+                 st.info(f"No K-12 schools from built-in list found within selected {selected_radius_display}-mile radius of input ZIPs.")
 
-            fn = 'zip_analysis_map_v10.png'; img = io.BytesIO()
+            fn = 'zip_analysis_map_v11.png'; img = io.BytesIO() # Key incremented
             map_figure.savefig(img, format='png', dpi=300, bbox_inches='tight')
             st.download_button(label="Download Map as PNG", data=img, file_name=fn, mime="image/png")
         except Exception as e: st.error(f"Error during map generation: {e}"); st.exception(e)
