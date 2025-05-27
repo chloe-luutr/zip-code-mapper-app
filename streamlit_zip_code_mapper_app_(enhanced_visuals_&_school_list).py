@@ -298,15 +298,16 @@ def main_plot_from_original_script(gdf_us, df_ads, df_schools):
             # Plot Ad ZIP markers
             gdf_ads_3857.plot(ax=ax, marker='s', color='green', markersize=40, label="Ad ZIPs", zorder=3, edgecolor='darkgreen')
             # Add serial numbers
-            # We need to map ZIPs from gdf_ads_3857 back to their original form if necessary, or use gdf_ads_merged
             temp_ads_with_zip_proj = gdf_ads_merged[['zip', 'geometry']].to_crs(epsg=3857) if not gdf_ads_merged.empty else gpd.GeoDataFrame()
 
             if not temp_ads_with_zip_proj.empty:
                 for _, row_proj in temp_ads_with_zip_proj.iterrows():
                     serial = zip_serial_map.get(row_proj['zip'])
                     if serial is not None and row_proj.geometry:
-                        ax.text(row_proj.geometry.x, row_proj.geometry.y, str(serial), color='black', fontsize=7, ha='center', va='center', zorder=5,
-                                bbox=dict(facecolor='white', alpha=0.5, pad=0.1, boxstyle='round,pad=0.2'))
+                        # MODIFIED: Increased zorder and bbox alpha for better visibility
+                        ax.text(row_proj.geometry.x, row_proj.geometry.y, str(serial), 
+                                color='black', fontsize=7, ha='center', va='center', zorder=12,
+                                bbox=dict(facecolor='white', alpha=0.7, pad=0.1, boxstyle='round,pad=0.2'))
 
 
     # 3. Plot school coverage buffers
@@ -504,3 +505,4 @@ else:
 
 st.markdown("---")
 st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic.")
+
