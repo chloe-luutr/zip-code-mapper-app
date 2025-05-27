@@ -353,9 +353,11 @@ def main_plot_from_original_script(gdf_us, df_ads, df_schools):
     # 5. Add basemap
     try: 
         # Ensure CRS is correctly passed as string for contextily
+        # MODIFIED: Removed attribution_position or set to a standard value like ctx.Place.BOTTOM_RIGHT
+        # If ctx.Place is not available, removing attribution_position is safest.
+        # For now, let's try removing it to use the default.
         ctx.add_basemap(ax, crs=gdf_filtered_3857.crs.to_string() if not gdf_filtered_3857.empty else "EPSG:3857", 
-                        source=ctx.providers.OpenStreetMap.Mapnik, zoom='auto', attribution_size=6,
-                        attribution_position=ctx. সাধারণত.নিচে_ডানে) # Explicitly set attribution position
+                        source=ctx.providers.OpenStreetMap.Mapnik, zoom='auto', attribution_size=6)
     except Exception as e: st.warning(f"Could not add basemap: {e}")
 
     ax.set_xlim(minx - pad_x, maxx + pad_x); ax.set_ylim(miny - pad_y, maxy + pad_y)
