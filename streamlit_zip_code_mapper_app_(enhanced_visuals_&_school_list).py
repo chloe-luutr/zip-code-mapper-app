@@ -24,10 +24,10 @@ This application generates a map visualizing school roles and advertisement targ
 - **Upload a single CSV file** containing your ZIP code data. This file should include:
     - A `zip` column (mandatory).
     - Optionally, a `teachers` column for the number of teachers.
-    - Optionally, a `tas` column for the number of teaching assistants.
-    (If `teachers` or `tas` columns are missing or have no values for a ZIP, they will be treated as 0 for that ZIP).
+    - Optionally, a `TAs` column for the number of teaching assistants.
+    (If `teachers` or `TAs` columns are missing or have no values for a ZIP, they will be treated as 0 for that ZIP).
 The map will show:
-- School locations with pie charts for `teachers` and `tas` (if data provided).
+- School locations with pie charts for `teachers` and `TAs` (if data provided).
 - 5 and 10-mile coverage radii around locations with role data.
 - All unique ZIPs from your file marked with serial numbers.
 - An OpenStreetMap basemap with Latitude/Longitude grid.
@@ -97,10 +97,10 @@ def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
 def load_map_data_from_upload(uploaded_file_object) -> pd.DataFrame:
     """
     Loads map data from a single uploaded CSV file.
-    Expected columns: 'zip' (mandatory), 'teachers' (optional), 'tas' (optional).
+    Expected columns: 'zip' (mandatory), 'teachers' (optional), 'TAs' (optional).
     """
     if uploaded_file_object is None: 
-        return pd.DataFrame(columns=['zip', 'teachers', 'tas']) # Return empty with expected columns
+        return pd.DataFrame(columns=['zip', 'teachers', 'TAs']) # Return empty with expected columns
     try:
         uploaded_file_object.seek(0)
         try:
@@ -112,7 +112,7 @@ def load_map_data_from_upload(uploaded_file_object) -> pd.DataFrame:
             first_lines_str = first_lines_bytes.decode('latin1', errors='ignore').splitlines()[0]
         except IndexError: # Empty file
              st.warning("Uploaded CSV file appears to be empty.")
-             return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+             return pd.DataFrame(columns=['zip', 'teachers', 'TAs'])
 
 
         delimiter = ';' if ';' in first_lines_str and first_lines_str.count(';') >= first_lines_str.count(',') else ','
@@ -123,24 +123,24 @@ def load_map_data_from_upload(uploaded_file_object) -> pd.DataFrame:
         
         if 'zip' not in df.columns and 'zip code' not in df.columns:
             st.error("Uploaded CSV must contain a 'zip' or 'zip code' column.")
-            return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+            return pd.DataFrame(columns=['zip', 'teachers', 'TAs'])
         if 'zip code' in df.columns and 'zip' not in df.columns:
             df.rename(columns={'zip code': 'zip'}, inplace=True)
             
         df['zip'] = df['zip'].astype(str).str.strip().str.zfill(5)
 
-        # Handle optional 'teachers' and 'tas' columns
-        for col_name in ['teachers', 'tas']:
+        # Handle optional 'teachers' and 'TAs' columns
+        for col_name in ['teachers', 'TAs']:
             if col_name in df.columns:
                 df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
             else:
                 df[col_name] = 0 # Add column with zeros if it doesn't exist
         
-        return df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip']) # Keep unique zips, sum roles later if needed
+        return df[['zip', 'teachers', 'TAs']].drop_duplicates(subset=['zip']) # Keep unique zips, sum roles later if needed
     
     except Exception as e:
         st.error(f"Error loading or processing uploaded CSV: {e}")
-        return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+        return pd.DataFrame(columns=['zip', 'teachers', 'TAs'])
 
 
 def geodesic_buffer_original(lon, lat, miles):
@@ -190,7 +190,7 @@ def plot_pie_chart_original(ax, x_center, y_center, counts_dict, radius, role_co
 def main_plot_from_original_script(gdf_us, df_map_data):
     gdf_us['zip'] = gdf_us['zip'].astype(str).str.zfill(5)
     
-    # df_map_data contains 'zip', 'teachers', 'tas'
+    # df_map_data contains 'zip', 'teachers', 'TAs'
     if df_map_data.empty or 'zip' not in df_map_data.columns:
         st.warning("No valid data from uploaded CSV to display.")
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No data to map", ha='center'); return fig
@@ -226,7 +226,7 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     if not gdf_schools_merged.empty: 
         gdf_schools_merged = gpd.GeoDataFrame(gdf_schools_merged, geometry='geometry', crs="EPSG:4326")
     else: # Ensure it's an empty GeoDataFrame with geometry
-        gdf_schools_merged = gpd.GeoDataFrame(columns=['zip', 'teachers', 'tas', 'geometry'], geometry='geometry', crs="EPSG:4326")
+        gdf_schools_merged = gpd.GeoDataFrame(columns=['zip', 'teachers', 'TAs', 'geometry'], geometry='geometry', crs="EPSG:4326")
 
 
     if gdf_schools_merged.empty and gdf_ads_merged.empty:
@@ -237,16 +237,16 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     teacher_cols = []
     if 'teachers' in gdf_schools_merged.columns and gdf_schools_merged['teachers'].sum() > 0:
         teacher_cols.append('teachers')
-    if 'tas' in gdf_schools_merged.columns and gdf_schools_merged['tas'].sum() > 0:
-        teacher_cols.append('tas')
+    if 'TAs' in gdf_schools_merged.columns and gdf_schools_merged['TAs'].sum() > 0:
+        teacher_cols.append('TAs')
     
     if not teacher_cols and not gdf_schools_merged.empty : 
-        st.info("No 'teachers' or 'tas' counts found in the uploaded data for pie charts.")
+        st.info("No 'teachers' or 'TAs' counts found in the uploaded data for pie charts.")
     elif teacher_cols:
         st.info(f"Using role columns for pie charts: {', '.join(teacher_cols)}")
 
 
-    if not gdf_schools_merged.empty and 'geometry' in gdf_schools_merged.columns and not gdf_schools_merged.geometry.is_empty.all() and any(gdf_schools_merged[col].sum() > 0 for col in ['teachers', 'tas'] if col in gdf_schools_merged):
+    if not gdf_schools_merged.empty and 'geometry' in gdf_schools_merged.columns and not gdf_schools_merged.geometry.is_empty.all() and any(gdf_schools_merged[col].sum() > 0 for col in ['teachers', 'TAs'] if col in gdf_schools_merged):
         create_geodesic_buffers_for_schools_original(gdf_schools_merged, radii=(5,10)) 
 
     gdf_ads_3857 = gdf_ads_merged.to_crs(epsg=3857) if not gdf_ads_merged.empty else \
@@ -293,14 +293,14 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     
     role_color_map = {}
     if teacher_cols:
-        # Use fixed colors for 'teachers' and 'tas' for consistency
+        # Use fixed colors for 'teachers' and 'TAs' for consistency
         palette = plt.cm.get_cmap('tab10')
         color_idx = 0
         if 'teachers' in teacher_cols:
             role_color_map['teachers'] = palette(color_idx)
             color_idx +=1
-        if 'tas' in teacher_cols:
-            role_color_map['tas'] = palette(color_idx)
+        if 'TAs' in teacher_cols:
+            role_color_map['TAs'] = palette(color_idx)
 
     if not gdf_filtered_3857.empty and 'geometry' in gdf_filtered_3857.columns:
         ax.plot(gdf_filtered_3857.geometry.x, gdf_filtered_3857.geometry.y, 'o', color='lightgray', alpha=0.4, markersize=8, label="Contextual ZIPs (US Master)", zorder=1)
@@ -349,8 +349,8 @@ def main_plot_from_original_script(gdf_us, df_map_data):
                 counts_dict = {}
                 if 'teachers' in teacher_cols and original_row.get('teachers', 0) > 0:
                     counts_dict['teachers'] = original_row['teachers']
-                if 'tas' in teacher_cols and original_row.get('tas', 0) > 0:
-                    counts_dict['tas'] = original_row['tas']
+                if 'TAs' in teacher_cols and original_row.get('TAs', 0) > 0:
+                    counts_dict['TAs'] = original_row['TAs']
                 
                 if counts_dict: 
                     total_jobs_at_school = sum(counts_dict.values())
@@ -413,8 +413,8 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     if teacher_cols and not gdf_schools_merged.empty: 
         if 'teachers' in role_color_map:
             handles.append(mpatches.Patch(color=role_color_map['teachers'], label='Teachers'))
-        if 'tas' in role_color_map:
-            handles.append(mpatches.Patch(color=role_color_map['tas'], label='TAs'))
+        if 'TAs' in role_color_map:
+            handles.append(mpatches.Patch(color=role_color_map['TAs'], label='TAs'))
             
     current_handles_ax, current_labels_ax = ax.get_legend_handles_labels()
     final_legend_items = {}
@@ -446,10 +446,10 @@ st.sidebar.header("Map Data Input")
 st.sidebar.markdown("Upload a single CSV file with your ZIP code data. The map will be generated based on this file.")
 
 uploaded_map_data_file = st.sidebar.file_uploader(
-    "CSV File: Must contain a 'zip' (or 'zip code') column. Optionally include 'teachers' and 'tas' columns for role counts.", 
+    "CSV File: Must contain a 'zip' (or 'zip code') column. Optionally include 'teachers' and 'TAs' columns for role counts.", 
     type="csv", 
     key="map_data_upload_v1", # New key for the single uploader
-    help="Columns should be: zip (text), teachers (numeric, optional), tas (numeric, optional). All unique ZIPs will get serial numbers. Roles data will generate pie charts and coverage radii."
+    help="Columns should be: zip (text), teachers (numeric, optional), TAs (numeric, optional). All unique ZIPs will get serial numbers. Roles data will generate pie charts and coverage radii."
 )
 
 st.sidebar.header("Map Display Options")
