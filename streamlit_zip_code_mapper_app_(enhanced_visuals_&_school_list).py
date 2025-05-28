@@ -474,7 +474,7 @@ if gdf_us_data.empty:
 if generate_map_button:
     if edited_df is not None and not edited_df.empty:
         # Process the data from the data_editor
-        df_map_data_processed = process_input_data(edited_df)
+        df_map_data_processed = process_input_dataframe(edited_df)
 
         if not gdf_us_data.empty and not df_map_data_processed.empty:
             st.info("Input data processed. Generating map...")
@@ -503,4 +503,4 @@ elif not generate_map_button : # Initial state or if button not pressed after in
 
 
 st.markdown("---")
-st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic
+st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic")
