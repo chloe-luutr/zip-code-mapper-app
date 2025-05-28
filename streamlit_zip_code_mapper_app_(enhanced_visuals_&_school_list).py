@@ -20,15 +20,13 @@ st.title("School Roles & Ad ZIPs Map Generator")
 st.markdown("""
 This application generates a map visualizing school roles and advertisement target ZIP codes.
 - The **US ZIP Codes Master File** is loaded automatically.
-- **Input your ZIP code data directly into the table below.**
-    - `zip` column (mandatory).
-    - `teachers` column for the number of teachers (numeric, optional).
-    - `tas` column for the number of teaching assistants (numeric, optional).
-    (If `teachers` or `tas` columns are missing or have no values for a ZIP, they will be treated as 0 for that ZIP).
+- **Choose your input method in the sidebar:**
+    - **Direct Table Input:** Enter ZIP codes, teacher counts, and TA counts directly into the table.
+    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (optional), and `tas` (optional) columns.
 The map will show:
 - School locations with pie charts for `teachers` and `tas` (if data provided).
 - 5 and 10-mile coverage radii around locations with role data.
-- All unique ZIPs from your table marked with serial numbers.
+- All unique ZIPs from your input marked with serial numbers.
 - An OpenStreetMap basemap with Latitude/Longitude grid.
 """)
 
@@ -91,39 +89,62 @@ def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
         st.error(f"Error loading US ZIP Codes Master File: {e}")
         return gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:4326")
 
-def process_input_data(df_input: pd.DataFrame) -> pd.DataFrame:
+def process_input_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     """
-    Processes the DataFrame from st.data_editor.
+    Processes a DataFrame (from st.data_editor or CSV).
     Ensures 'zip' is string & 5 digits, 'teachers' & 'tas' are numeric (default 0).
     """
     if df_input is None or df_input.empty:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
     df = df_input.copy()
+    df.columns = df.columns.str.strip().str.lower() # Normalize column names
 
-    # Ensure 'zip' column exists and is properly formatted
+    if 'zip code' in df.columns and 'zip' not in df.columns: # Handle 'zip code' as 'zip'
+        df.rename(columns={'zip code': 'zip'}, inplace=True)
+
     if 'zip' not in df.columns:
-        st.error("Input table must contain a 'zip' column.")
+        st.error("Input data must contain a 'zip' or 'zip code' column.")
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
     
-    # Convert to string, fill NaNs with empty string before zfill
     df['zip'] = df['zip'].astype(str).str.strip().fillna('').str.zfill(5)
-    # Remove rows where zip might have become '00000' due to empty input if that's not desired
-    # Or handle invalid zips (e.g. non-numeric after strip)
-    df = df[df['zip'].str.match(r'^\d{5}$')] # Keep only valid 5-digit zips
+    df = df[df['zip'].str.match(r'^\d{5}$')] 
 
-    # Ensure 'teachers' and 'tas' columns exist and are numeric, defaulting to 0
     for col_name in ['teachers', 'tas']:
         if col_name in df.columns:
             df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
         else:
             df[col_name] = 0
             
-    # Keep only essential columns and drop duplicates by zip (keeping first)
-    # If summing by zip is needed, that would be a different logic here.
-    # For now, assuming one entry per zip for roles is intended from the table.
     processed_df = df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip'], keep='first')
     return processed_df
+
+def load_and_process_csv_data(uploaded_file_object) -> pd.DataFrame:
+    """Loads and processes data from an uploaded CSV file."""
+    if uploaded_file_object is None: 
+        return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+    try:
+        uploaded_file_object.seek(0)
+        try:
+            first_lines_bytes = uploaded_file_object.read(1024)
+            first_lines_str = first_lines_bytes.decode('utf-8-sig').splitlines()[0]
+        except UnicodeDecodeError:
+            uploaded_file_object.seek(0)
+            first_lines_bytes = uploaded_file_object.read(1024)
+            first_lines_str = first_lines_bytes.decode('latin1', errors='ignore').splitlines()[0]
+        except IndexError:
+             st.warning("Uploaded CSV file appears to be empty.")
+             return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+
+        delimiter = ';' if ';' in first_lines_str and first_lines_str.count(';') >= first_lines_str.count(',') else ','
+        
+        uploaded_file_object.seek(0)
+        df_csv = pd.read_csv(uploaded_file_object, delimiter=delimiter, encoding='utf-8-sig', encoding_errors='ignore')
+        return process_input_dataframe(df_csv) # Use the common processing function
+    
+    except Exception as e:
+        st.error(f"Error loading or processing uploaded CSV: {e}")
+        return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
 
 def geodesic_buffer_original(lon, lat, miles):
@@ -210,7 +231,6 @@ def main_plot_from_original_script(gdf_us, df_map_data):
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No geodata for input ZIPs", ha='center'); return fig
 
     teacher_cols = []
-    # Check for actual numeric data in these columns before adding to teacher_cols
     if 'teachers' in gdf_schools_merged.columns and pd.to_numeric(gdf_schools_merged['teachers'], errors='coerce').sum() > 0:
         teacher_cols.append('teachers')
     if 'tas' in gdf_schools_merged.columns and pd.to_numeric(gdf_schools_merged['tas'], errors='coerce').sum() > 0:
@@ -483,4 +503,4 @@ elif not generate_map_button : # Initial state or if button not pressed after in
 
 
 st.markdown("---")
-st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic.")
+st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic
