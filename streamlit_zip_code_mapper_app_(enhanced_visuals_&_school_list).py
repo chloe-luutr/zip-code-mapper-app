@@ -15,18 +15,21 @@ import io
 from pathlib import Path # Import pathlib
 
 st.set_page_config(layout="wide")
-st.title("School Roles & Ad ZIPs Map Generator (Replicates combined_map.png)")
+# MODIFIED: App title
+st.title("School Roles & Ad ZIPs Map Generator")
 
 st.markdown("""
-This app replicates the functionality of the original `zip-code-maper.py` script.
-- The **US ZIP Codes Master File** is loaded automatically from the app's repository.
-- **Paste your Ad Target ZIPs** into the text box (optional).
-- **Upload your School Open Roles CSV file** (optional) to generate the map.
-The map will be generated if at least one data input (Ad ZIPs or School Roles) is provided.
+This application generates a map visualizing school roles and advertisement target ZIP codes.
+- The **US ZIP Codes Master File** is loaded automatically.
+- **Upload a single CSV file** containing your ZIP code data. This file should include:
+    - A `zip` column (mandatory).
+    - Optionally, a `teachers` column for the number of teachers.
+    - Optionally, a `tas` column for the number of teaching assistants.
+    (If `teachers` or `tas` columns are missing or have no values for a ZIP, they will be treated as 0 for that ZIP).
 The map will show:
-- School locations with pie charts representing open roles (if school data provided).
-- 5 and 10-mile coverage radii (lines) around schools (if school data provided).
-- Ad ZIPs with serial numbers (if Ad ZIPs provided).
+- School locations with pie charts for `teachers` and `tas` (if data provided).
+- 5 and 10-mile coverage radii around locations with role data.
+- All unique ZIPs from your file marked with serial numbers.
 - An OpenStreetMap basemap with Latitude/Longitude grid.
 """)
 
@@ -37,10 +40,10 @@ BASE_DIR = Path(__file__).resolve().parent
 MASTER_ZIP_FILE_PATH = BASE_DIR / "us_zip_master.csv" # Assumes this file is in the repo
 
 ###############################################################################
-# HELPER FUNCTIONS (Adapted from zip-code-maper.py)
+# HELPER FUNCTIONS
 ###############################################################################
 
-@st.cache_data # Cache data loading
+@st.cache_data
 def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
     """Loads US ZIP code data from a CSV file in the repository."""
     try:
@@ -89,51 +92,56 @@ def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
         st.error(f"Error loading US ZIP Codes Master File: {e}")
         return gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:4326")
 
-def parse_ad_target_zips_from_text(zip_code_text_input: str) -> pd.DataFrame:
-    """Parses a list of Ad Target ZIP codes from a text input area."""
-    if not zip_code_text_input.strip(): return pd.DataFrame(columns=['zip'])
-    zips = [z.strip() for z in pd.Series(zip_code_text_input.splitlines()).str.split(r'[\s,]+').explode() if z.strip().isdigit()]
-    valid_zips = [z.zfill(5) for z in zips if len(z.zfill(5)) == 5]
-    if not valid_zips: st.warning("No valid 5-digit Ad Target ZIP codes found in input text."); return pd.DataFrame(columns=['zip'])
-    return pd.DataFrame(list(set(valid_zips)), columns=['zip']).drop_duplicates(subset=['zip'])
-
-
+# MODIFIED: Function to load consolidated data from a single CSV upload
 @st.cache_data
-def load_school_requests_from_upload(uploaded_file_object) -> pd.DataFrame:
-    if uploaded_file_object is None: return pd.DataFrame()
+def load_map_data_from_upload(uploaded_file_object) -> pd.DataFrame:
+    """
+    Loads map data from a single uploaded CSV file.
+    Expected columns: 'zip' (mandatory), 'teachers' (optional), 'tas' (optional).
+    """
+    if uploaded_file_object is None: 
+        return pd.DataFrame(columns=['zip', 'teachers', 'tas']) # Return empty with expected columns
     try:
-        uploaded_file_object.seek(0); first_lines_bytes = uploaded_file_object.read(1024)
-        uploaded_file_object.seek(0); 
-        # Handle potential decoding errors more gracefully for the delimiter check
+        uploaded_file_object.seek(0)
         try:
+            first_lines_bytes = uploaded_file_object.read(1024)
             first_lines_str = first_lines_bytes.decode('utf-8-sig').splitlines()[0]
         except UnicodeDecodeError:
-            first_lines_str = first_lines_bytes.decode('latin1', errors='ignore').splitlines()[0] # Fallback encoding
+            uploaded_file_object.seek(0) # Reset seek if first decode failed
+            first_lines_bytes = uploaded_file_object.read(1024)
+            first_lines_str = first_lines_bytes.decode('latin1', errors='ignore').splitlines()[0]
+        except IndexError: # Empty file
+             st.warning("Uploaded CSV file appears to be empty.")
+             return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+
 
         delimiter = ';' if ';' in first_lines_str and first_lines_str.count(';') >= first_lines_str.count(',') else ','
         
-        # Reset seek for pd.read_csv
         uploaded_file_object.seek(0)
-        df = pd.read_csv(uploaded_file_object, delimiter=delimiter, encoding='utf-8-sig', encoding_errors='ignore') # Add encoding_errors
+        df = pd.read_csv(uploaded_file_object, delimiter=delimiter, encoding='utf-8-sig', encoding_errors='ignore')
         df.columns = df.columns.str.strip().str.lower()
         
-        # Try to find zip column more flexibly
-        zip_col_found = None
-        if 'zip' in df.columns:
-            zip_col_found = 'zip'
-        elif 'zip code' in df.columns:
-            zip_col_found = 'zip code'
+        if 'zip' not in df.columns and 'zip code' not in df.columns:
+            st.error("Uploaded CSV must contain a 'zip' or 'zip code' column.")
+            return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+        if 'zip code' in df.columns and 'zip' not in df.columns:
             df.rename(columns={'zip code': 'zip'}, inplace=True)
-        
-        if not zip_col_found:
-            st.error("School Open Roles CSV must contain a 'zip' or 'zip code' column.")
-            return pd.DataFrame()
             
         df['zip'] = df['zip'].astype(str).str.strip().str.zfill(5)
-        return df
+
+        # Handle optional 'teachers' and 'tas' columns
+        for col_name in ['teachers', 'tas']:
+            if col_name in df.columns:
+                df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
+            else:
+                df[col_name] = 0 # Add column with zeros if it doesn't exist
+        
+        return df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip']) # Keep unique zips, sum roles later if needed
+    
     except Exception as e:
-        st.error(f"Error loading School Open Roles: {e}")
-        return pd.DataFrame()
+        st.error(f"Error loading or processing uploaded CSV: {e}")
+        return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+
 
 def geodesic_buffer_original(lon, lat, miles):
     radius_m = miles * 1609.34; wgs84 = pyproj.CRS("EPSG:4326")
@@ -142,237 +150,243 @@ def geodesic_buffer_original(lon, lat, miles):
     project_back = pyproj.Transformer.from_crs(aeqd_proj, wgs84,  always_xy=True).transform
     return transform(project_back, transform(project_fwd, Point(lon, lat)).buffer(radius_m))
 
-def create_geodesic_buffers_for_schools_original(gdf_schools_data, radii=(5,10)): # Renamed param for clarity
-    """ Creates geodesic buffers and adds them as columns to gdf_schools_data. """
+def create_geodesic_buffers_for_schools_original(gdf_schools_data, radii=(5,10)):
     if gdf_schools_data.empty or 'geometry' not in gdf_schools_data.columns: return
     for r in radii:
         col_name = f"buffer_{r}"
         poly_list = [geodesic_buffer_original(row.geometry.x, row.geometry.y, r) if row.geometry and isinstance(row.geometry, Point) else None for _, row in gdf_schools_data.iterrows()]
-        gdf_schools_data[col_name] = gpd.GeoSeries(poly_list, crs="EPSG:4326") # Modifies the passed GeoDataFrame in place
+        gdf_schools_data[col_name] = gpd.GeoSeries(poly_list, crs="EPSG:4326")
 
 def plot_pie_chart_original(ax, x_center, y_center, counts_dict, radius, role_colors):
     total = sum(counts_dict.values())
-    if total <= 0 or radius <=0 : return # Guard clause for no data or zero radius
+    if total <= 0 or radius <=0 : return
     
-    items = sorted(counts_dict.items(), key=lambda item: item[0]) # Sort by role name for consistent color assignment
+    items = sorted(counts_dict.items(), key=lambda item: item[0]) 
     values = [v for _, v in items]; 
     fracs = [v / total for v in values]
     
-    # Ensure even tiny slices get a minimum angle to be visible
-    min_angle_deg = 1 # Minimum angle in degrees for a slice
+    min_angle_deg = 1 
     angles_deg = [max(f * 360, min_angle_deg if f > 0 else 0) for f in fracs]
     
-    # Normalize angles if they exceed 360 due to min_angle_deg enforcement
     sum_angles_deg = sum(angles_deg)
     if sum_angles_deg > 360:
         angles_deg = [a * (360 / sum_angles_deg) for a in angles_deg]
         
     current_angle_start = 0
     for i, (role, value) in enumerate(items):
-        if value > 0: # Only plot wedges for roles with counts
+        if value > 0: 
             angle_extent = angles_deg[i]
             wedge = Wedge(center=(x_center, y_center), r=radius, 
                           theta1=current_angle_start, theta2=current_angle_start + angle_extent,
-                          facecolor=role_colors.get(role, plt.cm.get_cmap('Greys')(0.5)), # Fallback color
-                          edgecolor='white', linewidth=0.5, alpha=0.85, zorder=10) # Added zorder to ensure pies are on top
+                          facecolor=role_colors.get(role, plt.cm.get_cmap('Greys')(0.5)), 
+                          edgecolor='white', linewidth=0.5, alpha=0.85, zorder=10) 
             ax.add_patch(wedge)
             current_angle_start += angle_extent
 
 ###############################################################################
-# MAIN PLOT FUNCTION (Adapted from zip-code-maper.py)
+# MAIN PLOT FUNCTION
 ###############################################################################
-def main_plot_from_original_script(gdf_us, df_ads, df_schools):
+# MODIFIED: Function signature to accept single df_map_data
+def main_plot_from_original_script(gdf_us, df_map_data):
     gdf_us['zip'] = gdf_us['zip'].astype(str).str.zfill(5)
-    if not df_ads.empty: df_ads['zip'] = df_ads['zip'].astype(str).str.zfill(5)
-    if not df_schools.empty: df_schools['zip'] = df_schools['zip'].astype(str).str.zfill(5)
-
-    relevant_zips = set()
-    if not df_ads.empty: relevant_zips.update(df_ads['zip'].unique())
-    if not df_schools.empty: relevant_zips.update(df_schools['zip'].unique())
     
-    if not relevant_zips:
-        st.warning("No relevant ZIPs from Ad or School data to display."); 
+    # df_map_data contains 'zip', 'teachers', 'tas'
+    if df_map_data.empty or 'zip' not in df_map_data.columns:
+        st.warning("No valid data from uploaded CSV to display.")
+        fig, ax = plt.subplots(); ax.text(0.5,0.5, "No data to map", ha='center'); return fig
+    
+    df_map_data['zip'] = df_map_data['zip'].astype(str).str.zfill(5)
+
+    # All unique ZIPs from the input are considered for serial numbering (Ad ZIPs)
+    df_ads_data = df_map_data[['zip']].copy().drop_duplicates()
+    # School data is the full map data
+    df_schools_data = df_map_data.copy()
+
+    relevant_zips = set(df_map_data['zip'].unique())
+    
+    if not relevant_zips: # Should be caught by df_map_data.empty earlier
+        st.warning("No relevant ZIPs from uploaded data to display."); 
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No ZIPs to map", ha='center'); return fig
 
     gdf_filtered = gdf_us[gdf_us['zip'].isin(relevant_zips)].copy()
     if gdf_filtered.empty:
-        st.warning("None of the Ad/School ZIPs found in US ZIP master."); 
-        fig, ax = plt.subplots(); ax.text(0.5,0.5, "ZIPs not in master", ha='center'); return fig
+        st.warning("None of the ZIPs from your file were found in the US ZIP master database."); 
+        fig, ax = plt.subplots(); ax.text(0.5,0.5, "Input ZIPs not in master DB", ha='center'); return fig
 
-    # Merge to get geometries for Ad and School ZIPs
-    gdf_ads_merged = pd.merge(df_ads, gdf_filtered[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry']) if not df_ads.empty else gpd.GeoDataFrame(columns=['zip', 'geometry'], crs="EPSG:4326")
-    gdf_schools_merged = pd.merge(df_schools, gdf_filtered[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry']) if not df_schools.empty else gpd.GeoDataFrame(columns=['zip', 'geometry'] + list(df_schools.columns.drop('zip', errors='ignore')), crs="EPSG:4326") # Preserve other school columns
+    # Merge to get geometries
+    gdf_ads_merged = pd.merge(df_ads_data, gdf_filtered[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
+    gdf_schools_merged = pd.merge(df_schools_data, gdf_filtered[['zip','geometry']], on='zip', how='left').dropna(subset=['geometry'])
 
-    if not gdf_ads_merged.empty: gdf_ads_merged = gpd.GeoDataFrame(gdf_ads_merged, geometry='geometry', crs="EPSG:4326")
-    if not gdf_schools_merged.empty: gdf_schools_merged = gpd.GeoDataFrame(gdf_schools_merged, geometry='geometry', crs="EPSG:4326")
+    if not gdf_ads_merged.empty: 
+        gdf_ads_merged = gpd.GeoDataFrame(gdf_ads_merged, geometry='geometry', crs="EPSG:4326")
+    else: # Ensure it's an empty GeoDataFrame with geometry if no ad zips found/matched
+        gdf_ads_merged = gpd.GeoDataFrame(columns=['zip', 'geometry'], geometry='geometry', crs="EPSG:4326")
+
+
+    if not gdf_schools_merged.empty: 
+        gdf_schools_merged = gpd.GeoDataFrame(gdf_schools_merged, geometry='geometry', crs="EPSG:4326")
+    else: # Ensure it's an empty GeoDataFrame with geometry
+        gdf_schools_merged = gpd.GeoDataFrame(columns=['zip', 'teachers', 'tas', 'geometry'], geometry='geometry', crs="EPSG:4326")
 
 
     if gdf_schools_merged.empty and gdf_ads_merged.empty:
-        st.warning("No geodata for Ad/School ZIPs after merge."); 
-        fig, ax = plt.subplots(); ax.text(0.5,0.5, "No geodata for Ad/School ZIPs", ha='center'); return fig
+        st.warning("No geographic data could be matched for the ZIPs in your file."); 
+        fig, ax = plt.subplots(); ax.text(0.5,0.5, "No geodata for input ZIPs", ha='center'); return fig
 
+    # Define teacher_cols based on fixed column names from the new input format
     teacher_cols = []
-    if not gdf_schools_merged.empty:
-        # Identify numeric columns in the original df_schools that are not 'zip' for roles
-        # This assumes roles are numeric counts.
-        potential_role_cols = df_schools.select_dtypes(include=np.number).columns
-        teacher_cols = [c for c in potential_role_cols if c.lower().strip() != 'zip']
-        
-        if not teacher_cols: 
-            st.info("No numeric columns (excluding 'zip') identified as 'roles' for pie charts in School Open Roles data.")
-        else: 
-            st.info(f"Identified role columns for pie charts: {', '.join(teacher_cols)}")
-            # Ensure these columns are present in gdf_schools_merged
-            for tc in teacher_cols:
-                if tc not in gdf_schools_merged.columns:
-                    # This case should ideally not happen if merge is correct
-                    st.warning(f"Role column '{tc}' not found in merged school data. Pie charts for this role might be affected.")
+    if 'teachers' in gdf_schools_merged.columns and gdf_schools_merged['teachers'].sum() > 0:
+        teacher_cols.append('teachers')
+    if 'tas' in gdf_schools_merged.columns and gdf_schools_merged['tas'].sum() > 0:
+        teacher_cols.append('tas')
+    
+    if not teacher_cols and not gdf_schools_merged.empty : 
+        st.info("No 'teachers' or 'tas' counts found in the uploaded data for pie charts.")
+    elif teacher_cols:
+        st.info(f"Using role columns for pie charts: {', '.join(teacher_cols)}")
 
 
-    # Create buffers on gdf_schools_merged (which has WGS84 geometries)
-    if not gdf_schools_merged.empty:
-        create_geodesic_buffers_for_schools_original(gdf_schools_merged, radii=(5,10)) # Modifies gdf_schools_merged
+    if not gdf_schools_merged.empty and 'geometry' in gdf_schools_merged.columns and not gdf_schools_merged.geometry.is_empty.all() and any(gdf_schools_merged[col].sum() > 0 for col in ['teachers', 'tas'] if col in gdf_schools_merged):
+        create_geodesic_buffers_for_schools_original(gdf_schools_merged, radii=(5,10)) 
 
-    # Project to Web Mercator (EPSG:3857) for plotting with contextily
-    gdf_ads_3857      = gdf_ads_merged.to_crs(epsg=3857) if not gdf_ads_merged.empty else gpd.GeoDataFrame(crs="EPSG:3857")
-    gdf_schools_3857  = gdf_schools_merged.to_crs(epsg=3857) if not gdf_schools_merged.empty else gpd.GeoDataFrame(crs="EPSG:3857")
-    gdf_filtered_3857 = gdf_filtered.to_crs(epsg=3857)
+    gdf_ads_3857 = gdf_ads_merged.to_crs(epsg=3857) if not gdf_ads_merged.empty else \
+                   gpd.GeoDataFrame({'geometry': []}, geometry='geometry', crs="EPSG:3857")
+    gdf_schools_3857 = gdf_schools_merged.to_crs(epsg=3857) if not gdf_schools_merged.empty else \
+                       gpd.GeoDataFrame({'geometry': []}, geometry='geometry', crs="EPSG:3857")
+    gdf_filtered_3857 = gdf_filtered.to_crs(epsg=3857) if not gdf_filtered.empty else \
+                        gpd.GeoDataFrame({'geometry': []}, geometry='geometry', crs="EPSG:3857")
 
-    # Add projected buffers to gdf_schools_3857 from gdf_schools_merged
-    # This ensures indices align if gdf_schools_merged was the source for gdf_schools_3857
-    if not gdf_schools_merged.empty and not gdf_schools_3857.empty:
-        if 'buffer_5' in gdf_schools_merged.columns:
-            # Project the GeoSeries and assign, ensuring index alignment
-            projected_buffer_5 = gpd.GeoSeries(gdf_schools_merged['buffer_5'], crs="EPSG:4326").to_crs(epsg=3857)
-            gdf_schools_3857['buffer_5_3857'] = projected_buffer_5.set_axis(gdf_schools_3857.index, axis='index', copy=False)
+    if not gdf_schools_merged.empty and not gdf_schools_3857.empty and 'geometry' in gdf_schools_merged.columns:
+        if 'buffer_5' in gdf_schools_merged.columns and gdf_schools_merged['buffer_5'].notna().any():
+            projected_buffer_5 = gpd.GeoSeries(gdf_schools_merged['buffer_5'][gdf_schools_merged['buffer_5'].notna()], crs="EPSG:4326").to_crs(epsg=3857)
+            gdf_schools_3857.loc[projected_buffer_5.index, 'buffer_5_3857'] = projected_buffer_5
 
-        if 'buffer_10' in gdf_schools_merged.columns:
-            projected_buffer_10 = gpd.GeoSeries(gdf_schools_merged['buffer_10'], crs="EPSG:4326").to_crs(epsg=3857)
-            gdf_schools_3857['buffer_10_3857'] = projected_buffer_10.set_axis(gdf_schools_3857.index, axis='index', copy=False)
+        if 'buffer_10' in gdf_schools_merged.columns and gdf_schools_merged['buffer_10'].notna().any():
+            projected_buffer_10 = gpd.GeoSeries(gdf_schools_merged['buffer_10'][gdf_schools_merged['buffer_10'].notna()], crs="EPSG:4326").to_crs(epsg=3857)
+            gdf_schools_3857.loc[projected_buffer_10.index, 'buffer_10_3857'] = projected_buffer_10
 
-
-    # Determine map bounds
-    combined_bounds_gdf = pd.concat([g for g in [gdf_filtered_3857, gdf_ads_3857, gdf_schools_3857] if not g.empty and 'geometry' in g.columns and not g.geometry.is_empty.all()])
+    combined_bounds_gdf = pd.concat([
+        g for g in [gdf_filtered_3857, gdf_ads_3857, gdf_schools_3857] 
+        if not g.empty and 'geometry' in g.columns and not g.geometry.is_empty.all()
+    ])
     if combined_bounds_gdf.empty or combined_bounds_gdf.total_bounds is None or any(np.isnan(combined_bounds_gdf.total_bounds)):
-        minx, miny, maxx, maxy = -14000000, 2800000, -7000000, 6300000 # Default fallback bounds
+        minx, miny, maxx, maxy = -14000000, 2800000, -7000000, 6300000 
     else: minx, miny, maxx, maxy = combined_bounds_gdf.total_bounds
     
     w = maxx - minx if maxx > minx else 1e6; h = maxy - miny if maxy > miny else 1e6
     expand_factor = st.session_state.get('map_expand_factor_orig_v3', 1.5) 
     pad_x, pad_y = expand_factor * w * 0.1, expand_factor * h * 0.1
 
-    # Calculate min/max jobs for pie chart scaling
     min_jobs_val, max_jobs_val = float('inf'), 0
-    if teacher_cols and not gdf_schools_merged.empty: # Use gdf_schools_merged for role data
+    if teacher_cols and not gdf_schools_merged.empty: 
         for _, row in gdf_schools_merged.iterrows(): 
             total = sum(pd.to_numeric(row.get(tc, 0), errors='coerce') or 0 for tc in teacher_cols)
             if total > max_jobs_val: max_jobs_val = total
             if total < min_jobs_val and total > 0: min_jobs_val = total
     if min_jobs_val == float('inf'): min_jobs_val = 0
-    if max_jobs_val == 0 and min_jobs_val == 0: max_jobs_val = 1 # Avoid division by zero if no jobs
+    if max_jobs_val == 0 and min_jobs_val == 0: max_jobs_val = 1 
 
     BIGGEST_PIE_RADIUS_orig = st.session_state.get('pie_radius_scale_orig_v3', 3000.0)
     get_pie_radius_orig = lambda total_jobs: BIGGEST_PIE_RADIUS_orig * math.sqrt(max(0, total_jobs) / max_jobs_val) if max_jobs_val > 0 else 0
 
     fig, ax = plt.subplots(figsize=(12,10))
     
-    # Define role colors
     role_color_map = {}
     if teacher_cols:
-        # Sort teacher_cols to ensure consistent color mapping if order changes
-        sorted_teacher_cols = sorted(list(set(teacher_cols)))
-        palette = plt.cm.get_cmap('tab10', len(sorted_teacher_cols)) if len(sorted_teacher_cols) <= 10 else plt.cm.get_cmap('tab20', len(sorted_teacher_cols))
-        for i, role in enumerate(sorted_teacher_cols): 
-            role_color_map[role] = palette(i)
+        # Use fixed colors for 'teachers' and 'tas' for consistency
+        palette = plt.cm.get_cmap('tab10')
+        color_idx = 0
+        if 'teachers' in teacher_cols:
+            role_color_map['teachers'] = palette(color_idx)
+            color_idx +=1
+        if 'tas' in teacher_cols:
+            role_color_map['tas'] = palette(color_idx)
 
-    # 1. Plot contextual ZIPs (background)
-    if not gdf_filtered_3857.empty:
-        ax.plot(gdf_filtered_3857.geometry.x, gdf_filtered_3857.geometry.y, 'o', color='lightgray', alpha=0.4, markersize=8, label="Contextual ZIPs", zorder=1)
+    if not gdf_filtered_3857.empty and 'geometry' in gdf_filtered_3857.columns:
+        ax.plot(gdf_filtered_3857.geometry.x, gdf_filtered_3857.geometry.y, 'o', color='lightgray', alpha=0.4, markersize=8, label="Contextual ZIPs (US Master)", zorder=1)
     
-    # 2. Plot Ad ZIPs and their serial numbers
     zip_serial_map = {}
-    if not df_ads.empty: 
-        # Create serial map from the original df_ads to maintain consistent numbering
-        zip_serial_map = {str(zip_code).zfill(5): i+1 for i, zip_code in enumerate(df_ads['zip'].unique())} # Use unique zips from input
+    if not df_ads_data.empty: # df_ads_data now comes from unique zips in uploaded file
+        zip_serial_map = {str(zip_code).zfill(5): i+1 for i, zip_code in enumerate(df_ads_data['zip'].unique())} 
         
-        if not gdf_ads_3857.empty: # gdf_ads_3857 contains geometry
-            # Plot Ad ZIP markers
-            gdf_ads_3857.plot(ax=ax, marker='s', color='green', markersize=40, label="Ad ZIPs", zorder=3, edgecolor='darkgreen')
-            # Add serial numbers
-            temp_ads_with_zip_proj = gdf_ads_merged[['zip', 'geometry']].to_crs(epsg=3857) if not gdf_ads_merged.empty else gpd.GeoDataFrame()
-
-            if not temp_ads_with_zip_proj.empty:
-                for _, row_proj in temp_ads_with_zip_proj.iterrows():
-                    serial = zip_serial_map.get(row_proj['zip'])
+        if not gdf_ads_3857.empty and 'geometry' in gdf_ads_3857.columns: 
+            gdf_ads_3857.plot(ax=ax, marker='s', color='green', markersize=40, label="Input ZIP Locations", zorder=3, edgecolor='darkgreen')
+            
+            # temp_ads_with_zip_proj is essentially gdf_ads_3857 if gdf_ads_merged was correctly formed
+            for _, row_proj in gdf_ads_3857.iterrows(): # Iterate directly over gdf_ads_3857
+                # gdf_ads_3857 was merged from df_ads_data which has 'zip'
+                # Find the original ZIP for this projected geometry.
+                # This requires gdf_ads_merged to have 'zip' before to_crs, which it does.
+                original_zip_row = gdf_ads_merged[gdf_ads_merged.geometry == row_proj.geometry.buffer(1e-9).representative_point().buffer(1e-9)] # A way to match, might need improvement
+                
+                # Simpler: gdf_ads_3857 should have an index that matches gdf_ads_merged
+                if row_proj.name in gdf_ads_merged.index:
+                    original_zip = gdf_ads_merged.loc[row_proj.name, 'zip']
+                    serial = zip_serial_map.get(original_zip)
                     if serial is not None and row_proj.geometry:
-                        # MODIFIED: Increased zorder and bbox alpha for better visibility
                         ax.text(row_proj.geometry.x, row_proj.geometry.y, str(serial), 
                                 color='black', fontsize=7, ha='center', va='center', zorder=12,
                                 bbox=dict(facecolor='white', alpha=0.7, pad=0.1, boxstyle='round,pad=0.2'))
+                # else: st.write(f"Could not find original zip for serial on row {row_proj.name}")
 
 
-    # 3. Plot school coverage buffers
-    if not gdf_schools_3857.empty:
+    if not gdf_schools_3857.empty and 'geometry' in gdf_schools_3857.columns:
         if 'buffer_5_3857' in gdf_schools_3857.columns and gdf_schools_3857['buffer_5_3857'].notna().any():
-            # Plot the GeoSeries of buffer geometries
             gdf_schools_3857['buffer_5_3857'][gdf_schools_3857['buffer_5_3857'].notna()].plot(
                 ax=ax, edgecolor='red', facecolor='none', alpha=0.5, linewidth=1.0, zorder=4
             )
         if 'buffer_10_3857' in gdf_schools_3857.columns and gdf_schools_3857['buffer_10_3857'].notna().any():
             gdf_schools_3857['buffer_10_3857'][gdf_schools_3857['buffer_10_3857'].notna()].plot(
-                ax=ax, edgecolor='orange', facecolor='none', alpha=0.6, linewidth=1.5, zorder=3 # zorder 3 so 5-mile is on top
+                ax=ax, edgecolor='orange', facecolor='none', alpha=0.6, linewidth=1.5, zorder=3 
             )
 
-    # 4. Plot school locations: Pie charts or markers
-    if teacher_cols and not gdf_schools_3857.empty:
-        # Iterate through projected school locations for plotting
+    if teacher_cols and not gdf_schools_3857.empty and 'geometry' in gdf_schools_3857.columns:
         for idx, row_proj in gdf_schools_3857.iterrows(): 
             if row_proj.geometry is None or row_proj.geometry.is_empty: continue
             
-            # Get original data for roles from gdf_schools_merged using the index
             if idx in gdf_schools_merged.index:
                 original_row = gdf_schools_merged.loc[idx]
-                counts_dict = {tc: pd.to_numeric(original_row.get(tc, 0), errors='coerce') or 0 for tc in teacher_cols}
-                counts_dict = {k: v for k, v in counts_dict.items() if v > 0} # Only include roles with counts > 0
+                counts_dict = {}
+                if 'teachers' in teacher_cols and original_row.get('teachers', 0) > 0:
+                    counts_dict['teachers'] = original_row['teachers']
+                if 'tas' in teacher_cols and original_row.get('tas', 0) > 0:
+                    counts_dict['tas'] = original_row['tas']
                 
-                if counts_dict: # If there are any roles with counts
+                if counts_dict: 
                     total_jobs_at_school = sum(counts_dict.values())
                     r_pie = get_pie_radius_orig(total_jobs_at_school)
                     
-                    # MODIFIED: Plot pie if radius is greater than 0 (was > 500)
                     if r_pie > 0: 
                         plot_pie_chart_original(ax, row_proj.geometry.x, row_proj.geometry.y, counts_dict, r_pie, role_color_map)
-                    elif total_jobs_at_school > 0 : # If jobs exist but pie is too small, plot a small marker
+                    elif total_jobs_at_school > 0 : 
                          ax.plot(row_proj.geometry.x, row_proj.geometry.y, marker='P', color='darkviolet', markersize=30, alpha=0.7, zorder=5, markeredgecolor='black')
-                else: # No roles with counts > 0, plot a default marker
-                    ax.plot(row_proj.geometry.x, row_proj.geometry.y, marker='P', color='gray', markersize=30, alpha=0.7, zorder=5, markeredgecolor='black', label="School (No Role Data)" if "School (No Role Data)" not in ax.get_legend_handles_labels()[1] else "")
-            else: # Should not happen if indexing is correct
-                 ax.plot(row_proj.geometry.x, row_proj.geometry.y, marker='X', color='black', markersize=30, zorder=5) # Error marker
+                # If no counts_dict, it means no roles > 0, so it won't plot a pie. Marker for ad_zip already handled.
+            # else: st.write(f"idx {idx} not in gdf_schools_merged for pie chart")
                  
-    elif not gdf_schools_3857.empty: # No teacher_cols identified, plot default markers for all schools
-         gdf_schools_3857.plot(ax=ax, marker='P', color='darkviolet', markersize=60, label="School Locations (No Role Data)", zorder=5, alpha=0.8, edgecolor='black')
+    elif not gdf_schools_3857.empty and not teacher_cols and 'geometry' in gdf_schools_3857.columns : 
+         # This case is less likely now with fixed teacher_cols, but as a fallback if no roles defined
+         gdf_schools_3857.plot(ax=ax, marker='P', color='darkviolet', markersize=60, label="Input ZIPs (No Role Data)", zorder=5, alpha=0.8, edgecolor='black')
 
-    # 5. Add basemap
     try: 
-        # Ensure CRS is correctly passed as string for contextily
-        # MODIFIED: Removed attribution_position or set to a standard value like ctx.Place.BOTTOM_RIGHT
-        # If ctx.Place is not available, removing attribution_position is safest.
-        # For now, let's try removing it to use the default.
-        ctx.add_basemap(ax, crs=gdf_filtered_3857.crs.to_string() if not gdf_filtered_3857.empty else "EPSG:3857", 
+        basemap_crs = "EPSG:3857" 
+        if not gdf_filtered_3857.empty and 'geometry' in gdf_filtered_3857.columns and gdf_filtered_3857.crs:
+            basemap_crs = gdf_filtered_3857.crs.to_string()
+        elif not combined_bounds_gdf.empty and 'geometry' in combined_bounds_gdf.columns and combined_bounds_gdf.crs:
+             basemap_crs = combined_bounds_gdf.crs.to_string()
+
+        ctx.add_basemap(ax, crs=basemap_crs, 
                         source=ctx.providers.OpenStreetMap.Mapnik, zoom='auto', attribution_size=6)
     except Exception as e: st.warning(f"Could not add basemap: {e}")
 
     ax.set_xlim(minx - pad_x, maxx + pad_x); ax.set_ylim(miny - pad_y, maxy + pad_y)
     
-    # Configure Lat/Lon grid
     transformer = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
     num_xticks = st.session_state.get('num_grid_ticks_orig_v3', 10)
-    num_yticks = st.session_state.get('num_grid_ticks_orig_v3', 10) # Can be different if desired
+    num_yticks = st.session_state.get('num_grid_ticks_orig_v3', 10) 
     
     plot_xticks = np.linspace(ax.get_xlim()[0], ax.get_xlim()[1], num=num_xticks)
     plot_yticks = np.linspace(ax.get_ylim()[0], ax.get_ylim()[1], num=num_yticks)
     
-    # Ensure transformation doesn't fail for edge cases by providing valid y for x-ticks and x for y-ticks
     valid_y_for_xtick_transform = ax.get_ylim()[0] if not np.isnan(ax.get_ylim()[0]) else 0
     valid_x_for_ytick_transform = ax.get_xlim()[0] if not np.isnan(ax.get_xlim()[0]) else 0
 
@@ -383,43 +397,30 @@ def main_plot_from_original_script(gdf_us, df_ads, df_schools):
     ax.set_yticks(plot_yticks); ax.set_yticklabels([f"{lat:.2f}°" for lat in yticks_latlon], fontsize=7)
     ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.5, color='gray')
 
-    # Create legend
     handles, labels = [], []
-    # Contextual ZIPs
-    if not gdf_filtered_3857.empty :
-        handles.append(mlines.Line2D([], [], color='lightgray', marker='o', linestyle='None', markersize=5, alpha=0.4)); labels.append('Contextual ZIPs')
-    # Ad ZIPs
-    if not gdf_ads_3857.empty:
-        handles.append(mlines.Line2D([], [], color='green', marker='s', linestyle='None', markersize=7, markeredgecolor='darkgreen')); labels.append('Ad ZIPs')
-    # School Buffers
-    if not gdf_schools_3857.empty:
+    if not gdf_filtered_3857.empty and 'geometry' in gdf_filtered_3857.columns and not gdf_filtered_3857.geometry.is_empty.all():
+        handles.append(mlines.Line2D([], [], color='lightgray', marker='o', linestyle='None', markersize=5, alpha=0.4)); labels.append('Contextual ZIPs (US Master)')
+    if not gdf_ads_3857.empty and 'geometry' in gdf_ads_3857.columns and not gdf_ads_3857.geometry.is_empty.all(): # Changed label
+        handles.append(mlines.Line2D([], [], color='green', marker='s', linestyle='None', markersize=7, markeredgecolor='darkgreen')); labels.append('Input ZIP Locations')
+    
+    # Buffers only if schools with roles exist
+    if not gdf_schools_3857.empty and 'geometry' in gdf_schools_3857.columns and not gdf_schools_3857.geometry.is_empty.all() and teacher_cols:
         if 'buffer_5_3857' in gdf_schools_3857 and gdf_schools_3857['buffer_5_3857'].notna().any(): 
-            handles.append(mlines.Line2D([], [], color='red', linestyle='-', linewidth=1.0, alpha=0.5)); labels.append('5-mile School Coverage')
+            handles.append(mlines.Line2D([], [], color='red', linestyle='-', linewidth=1.0, alpha=0.5)); labels.append('5-mile Role Coverage')
         if 'buffer_10_3857' in gdf_schools_3857 and gdf_schools_3857['buffer_10_3857'].notna().any(): 
-            handles.append(mlines.Line2D([], [], color='orange', linestyle='-', linewidth=1.5, alpha=0.6)); labels.append('10-mile School Coverage')
+            handles.append(mlines.Line2D([], [], color='orange', linestyle='-', linewidth=1.5, alpha=0.6)); labels.append('10-mile Role Coverage')
     
-    # School Roles (from pie charts) or default school marker
-    if teacher_cols and not gdf_schools_merged.empty: # Use merged for checking if teacher_cols applies
-        for role, color in sorted(role_color_map.items()): # Sort for consistent legend order
-            handles.append(mpatches.Patch(color=color, label=role.replace('_', ' ').title()))
-            # labels.append(role.replace('_', ' ').title()) # Label already included in Patch
-    elif not gdf_schools_3857.empty and not teacher_cols: # Default school marker if no roles
-        handles.append(mlines.Line2D([], [], color='darkviolet', marker='P', linestyle='None', markersize=8, label='School Locations')); 
-        # labels.append('School Locations')
-    elif not gdf_schools_3857.empty and any(row.get('total_jobs',0)==0 for _, row in gdf_schools_merged.iterrows()) : # For schools with no role data plotted as gray
-        if not any("School (No Role Data)" in lab for lab in labels):
-             handles.append(mlines.Line2D([], [], color='gray', marker='P', linestyle='None', markersize=8, label='School (No Role Data)'));
-             # labels.append('School (No Role Data)')
-
-
-    # Combine handles and labels, removing duplicates by label
-    # Get existing handles/labels from plot elements like gdf_ads_3857.plot()
+    if teacher_cols and not gdf_schools_merged.empty: 
+        if 'teachers' in role_color_map:
+            handles.append(mpatches.Patch(color=role_color_map['teachers'], label='Teachers'))
+        if 'tas' in role_color_map:
+            handles.append(mpatches.Patch(color=role_color_map['tas'], label='TAs'))
+            
     current_handles_ax, current_labels_ax = ax.get_legend_handles_labels()
-    
     final_legend_items = {}
-    for handle, label in zip(current_handles_ax, current_labels_ax):
+    for handle, label in zip(current_handles_ax, current_labels_ax): # Add auto-generated legend items first
         if label not in final_legend_items: final_legend_items[label] = handle
-    for handle, label in zip(handles, labels): # For manually created legend items
+    for handle, label in zip(handles, labels):  # Add manually created ones, avoid duplicates
          if label not in final_legend_items: final_legend_items[label] = handle
             
     if final_legend_items:
@@ -427,43 +428,31 @@ def main_plot_from_original_script(gdf_us, df_ads, df_schools):
                   loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0., 
                   fontsize='small', title="Legend", title_fontsize="medium")
 
-    # Add Job Range text
     if teacher_cols and not gdf_schools_merged.empty:
-         ax.text(1.02, 0.5 if len(final_legend_items) < 8 else 0.2, # Adjust y position based on legend height
-                f"School Job Range:\nMin Roles: {min_jobs_val if min_jobs_val != float('inf') else 'N/A'}\nMax Roles: {max_jobs_val if max_jobs_val > 0 else 'N/A'}",
+         ax.text(1.02, 0.5 if len(final_legend_items) < 8 else 0.2, 
+                f"Role Range (per ZIP):\nMin Roles: {min_jobs_val if min_jobs_val != float('inf') else 'N/A'}\nMax Roles: {max_jobs_val if max_jobs_val > 0 else 'N/A'}",
                 transform=ax.transAxes, va='top', fontsize='small',
                 bbox=dict(boxstyle="round,pad=0.3", fc="wheat", alpha=0.5))
 
-    ax.set_title("Schools (Pie Charts + Coverage), Ad ZIPs, OSM Basemap\nLat/Lon Grid, Legend & Job Range on Right", fontsize=14)
-    plt.tight_layout(rect=[0, 0, 0.80, 1]) # Adjust rect to ensure legend fits
+    ax.set_title("School Roles & Ad ZIPs Map\nLat/Lon Grid, Legend & Role Range on Right", fontsize=14)
+    plt.tight_layout(rect=[0, 0, 0.80, 1]) 
     return fig
-    # --- End of main_plot_from_original_script ---
 
 ###############################################################################
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
-# MODIFIED: Sidebar headers and informational text for inputs
-st.sidebar.header("Map Data Inputs")
-st.sidebar.markdown("Provide data for Ad Target ZIPs and/or School Open Roles. At least one is needed to generate a map.")
+# MODIFIED: UI for single CSV input
+st.sidebar.header("Map Data Input")
+st.sidebar.markdown("Upload a single CSV file with your ZIP code data. The map will be generated based on this file.")
 
-st.sidebar.subheader("Ad Target ZIP Codes (Optional)")
-ad_target_zips_text = st.sidebar.text_area(
-    "Paste Ad Target ZIPs (comma/space/newline separated):", 
-    height=100, 
-    key="ad_zips_text_v3",
-    help="These ZIP codes will be marked on the map with serial numbers."
-)
-
-st.sidebar.subheader("School Open Roles File (CSV - Optional)")
-uploaded_school_requests_file = st.sidebar.file_uploader(
-    "Upload a CSV file with school locations (must contain 'zip' or 'zip code' column) and numeric role count columns (e.g., 'TA', 'Teacher').", 
+uploaded_map_data_file = st.sidebar.file_uploader(
+    "CSV File: Must contain a 'zip' (or 'zip code') column. Optionally include 'teachers' and 'tas' columns for role counts.", 
     type="csv", 
-    key="school_requests_orig_v3",
-    help="Data from this file will be used to plot schools, pie charts for open roles, and coverage radii."
+    key="map_data_upload_v1", # New key for the single uploader
+    help="Columns should be: zip (text), teachers (numeric, optional), tas (numeric, optional). All unique ZIPs will get serial numbers. Roles data will generate pie charts and coverage radii."
 )
 
 st.sidebar.header("Map Display Options")
-# Session state for sliders to remember values
 if 'map_expand_factor_orig_v3' not in st.session_state: st.session_state.map_expand_factor_orig_v3 = 1.5
 st.session_state.map_expand_factor_orig_v3 = st.sidebar.slider("Map Zoom/Expand Factor:", min_value=0.5, max_value=5.0, value=st.session_state.map_expand_factor_orig_v3, step=0.1, key="map_expand_slider_orig_v3")
 
@@ -473,40 +462,42 @@ st.session_state.pie_radius_scale_orig_v3 = st.sidebar.slider("Pie Chart Max Rad
 if 'num_grid_ticks_orig_v3' not in st.session_state: st.session_state.num_grid_ticks_orig_v3 = 10
 st.session_state.num_grid_ticks_orig_v3 = st.sidebar.slider("Number of Lat/Lon Grid Ticks:", min_value=3, max_value=30, value=st.session_state.num_grid_ticks_orig_v3, step=1, key="grid_ticks_slider_orig_v3")
 
-# Load master US ZIP data automatically from repository
 gdf_us_data = load_us_zip_codes_from_repo(MASTER_ZIP_FILE_PATH)
 
 if gdf_us_data.empty:
     st.error("ERROR: Could not load US ZIP Codes Master File from repository. App cannot proceed. Ensure 'us_zip_master.csv' is in the GitHub repository and correctly formatted.")
     st.stop()
 
-# Main app logic
-# MODIFIED: Updated conditional messages for clarity
-if ad_target_zips_text.strip() or uploaded_school_requests_file: 
+# MODIFIED: Main app logic for single file input
+if uploaded_map_data_file: 
     
-    df_ads_data = parse_ad_target_zips_from_text(ad_target_zips_text)
-    df_schools_data = load_school_requests_from_upload(uploaded_school_requests_file)
+    df_map_data_loaded = load_map_data_from_upload(uploaded_map_data_file)
 
-    if not gdf_us_data.empty and (not df_ads_data.empty or not df_schools_data.empty) :
+    if not gdf_us_data.empty and not df_map_data_loaded.empty :
         st.info("Input data processed. Generating map...")
         try:
-            map_figure = main_plot_from_original_script(gdf_us_data, df_ads_data, df_schools_data)
+            # Pass df_map_data_loaded directly
+            map_figure = main_plot_from_original_script(gdf_us_data, df_map_data_loaded)
             st.pyplot(map_figure)
             st.success("Map generated successfully!")
             
-            fn = 'combined_map_streamlit_v5.png' # Incremented version
+            fn = 'school_ad_zip_map.png' # Generic name now
             img_bytes = io.BytesIO()
             map_figure.savefig(img_bytes, format='png', dpi=150, bbox_inches='tight')
             img_bytes.seek(0)
             st.download_button(label="Download Map as PNG", data=img_bytes, file_name=fn, mime="image/png")
         except Exception as e: 
             st.error(f"Error during map generation: {e}")
-            st.exception(e) # Shows full traceback for debugging
-    elif gdf_us_data.empty: # This case is already handled by st.stop() but as a safeguard
+            st.exception(e) 
+    elif gdf_us_data.empty: 
         st.error("Cannot generate map because US ZIP Code master data failed to load.")
-    else: 
-        st.warning("Map could not be generated. Please provide Ad Target ZIPs or upload a School Open Roles file (or both).")
+    elif df_map_data_loaded.empty and uploaded_map_data_file: # File was uploaded but processed to empty
+        st.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format and content.")
+    else: # No file uploaded yet, or other unhandled case
+         st.warning("Map could not be generated. Please upload a CSV file with ZIP code data.")
 else:
-    st.sidebar.info("To generate a map, please provide Ad Target ZIPs and/or upload a School Open Roles CSV file using the options above.")
-    st.info("Awaiting data inputs...")
+    st.sidebar.info("To generate a map, please upload a CSV file with ZIP code data using the option above.")
+    st.info("Awaiting data input via CSV upload...")
 
+st.markdown("---")
+st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic.")
