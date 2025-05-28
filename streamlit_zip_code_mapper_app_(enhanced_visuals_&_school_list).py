@@ -20,12 +20,13 @@ st.title("School Roles & Ad ZIPs Map Generator (Replicates combined_map.png)")
 st.markdown("""
 This app replicates the functionality of the original `zip-code-maper.py` script.
 - The **US ZIP Codes Master File** is loaded automatically from the app's repository.
-- **Paste your Ad Target ZIPs** into the text box.
-- **Upload your School Open Roles CSV file** to generate the map.
+- **Paste your Ad Target ZIPs** into the text box (optional).
+- **Upload your School Open Roles CSV file** (optional) to generate the map.
+The map will be generated if at least one data input (Ad ZIPs or School Roles) is provided.
 The map will show:
-- School locations with pie charts representing open roles.
-- 5 and 10-mile coverage radii (lines) around schools.
-- Ad ZIPs with serial numbers.
+- School locations with pie charts representing open roles (if school data provided).
+- 5 and 10-mile coverage radii (lines) around schools (if school data provided).
+- Ad ZIPs with serial numbers (if Ad ZIPs provided).
 - An OpenStreetMap basemap with Latitude/Longitude grid.
 """)
 
@@ -441,18 +442,24 @@ def main_plot_from_original_script(gdf_us, df_ads, df_schools):
 ###############################################################################
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
-st.sidebar.header("1. Paste Ad Target ZIP Codes")
+# MODIFIED: Sidebar headers and informational text for inputs
+st.sidebar.header("Map Data Inputs")
+st.sidebar.markdown("Provide data for Ad Target ZIPs and/or School Open Roles. At least one is needed to generate a map.")
+
+st.sidebar.subheader("Ad Target ZIP Codes (Optional)")
 ad_target_zips_text = st.sidebar.text_area(
-    "Paste Ad Target ZIPs (for serial numbers on map, comma/space/newline separated):", 
+    "Paste Ad Target ZIPs (comma/space/newline separated):", 
     height=100, 
-    key="ad_zips_text_v3"
+    key="ad_zips_text_v3",
+    help="These ZIP codes will be marked on the map with serial numbers."
 )
 
-st.sidebar.header("2. Upload School Open Roles File (CSV)")
+st.sidebar.subheader("School Open Roles File (CSV - Optional)")
 uploaded_school_requests_file = st.sidebar.file_uploader(
-    "School Open Roles File (must contain 'zip' or 'zip code' and numeric role count columns e.g., 'TA', 'Teacher'):", 
+    "Upload a CSV file with school locations (must contain 'zip' or 'zip code' column) and numeric role count columns (e.g., 'TA', 'Teacher').", 
     type="csv", 
-    key="school_requests_orig_v3"
+    key="school_requests_orig_v3",
+    help="Data from this file will be used to plot schools, pie charts for open roles, and coverage radii."
 )
 
 st.sidebar.header("Map Display Options")
@@ -474,20 +481,20 @@ if gdf_us_data.empty:
     st.stop()
 
 # Main app logic
-if ad_target_zips_text.strip() or uploaded_school_requests_file: # Allow map if either is provided
+# MODIFIED: Updated conditional messages for clarity
+if ad_target_zips_text.strip() or uploaded_school_requests_file: 
     
     df_ads_data = parse_ad_target_zips_from_text(ad_target_zips_text)
     df_schools_data = load_school_requests_from_upload(uploaded_school_requests_file)
 
-    # Proceed if we have any data to plot, even if one input is missing but we have US zips
     if not gdf_us_data.empty and (not df_ads_data.empty or not df_schools_data.empty) :
-        st.info("Data loaded. Generating map...")
+        st.info("Input data processed. Generating map...")
         try:
             map_figure = main_plot_from_original_script(gdf_us_data, df_ads_data, df_schools_data)
             st.pyplot(map_figure)
             st.success("Map generated successfully!")
             
-            fn = 'combined_map_streamlit_v4.png' # Incremented version
+            fn = 'combined_map_streamlit_v5.png' # Incremented version
             img_bytes = io.BytesIO()
             map_figure.savefig(img_bytes, format='png', dpi=150, bbox_inches='tight')
             img_bytes.seek(0)
@@ -495,14 +502,11 @@ if ad_target_zips_text.strip() or uploaded_school_requests_file: # Allow map if 
         except Exception as e: 
             st.error(f"Error during map generation: {e}")
             st.exception(e) # Shows full traceback for debugging
-    elif gdf_us_data.empty:
+    elif gdf_us_data.empty: # This case is already handled by st.stop() but as a safeguard
         st.error("Cannot generate map because US ZIP Code master data failed to load.")
-    else: # gdf_us_data is loaded, but both ad_zips and school_roles are empty/invalid
-        st.warning("Map could not be generated. Please provide Ad Target ZIPs and/or upload a valid School Open Roles file.")
+    else: 
+        st.warning("Map could not be generated. Please provide Ad Target ZIPs or upload a School Open Roles file (or both).")
 else:
-    st.sidebar.info("Please paste Ad Target ZIPs and/or upload the School Open Roles CSV file to generate the map.")
-    st.info("Awaiting inputs...")
-
-st.markdown("---")
-st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic.")
+    st.sidebar.info("To generate a map, please provide Ad Target ZIPs and/or upload a School Open Roles CSV file using the options above.")
+    st.info("Awaiting data inputs...")
 
