@@ -98,24 +98,31 @@ def process_input_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
     df = df_input.copy()
-    df.columns = df.columns.str.strip().str.lower() # Normalize column names
+    # Normalize column names (e.g., convert to lower case, strip whitespace)
+    df.columns = df.columns.str.strip().str.lower()
+
 
     if 'zip code' in df.columns and 'zip' not in df.columns: # Handle 'zip code' as 'zip'
         df.rename(columns={'zip code': 'zip'}, inplace=True)
 
     if 'zip' not in df.columns:
-        st.error("Input data must contain a 'zip' or 'zip code' column.")
+        # This error should ideally be caught by the input method's requirements
+        # st.error("Input data must contain a 'zip' or 'zip code' column.") 
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
     
+    # Convert to string, fill NaNs with empty string before zfill
     df['zip'] = df['zip'].astype(str).str.strip().fillna('').str.zfill(5)
-    df = df[df['zip'].str.match(r'^\d{5}$')] 
+    # Keep only rows where zip is exactly 5 digits
+    df = df[df['zip'].str.match(r'^\d{5}$')].copy() # Use .copy() to avoid SettingWithCopyWarning
 
+    # Ensure 'teachers' and 'tas' columns exist and are numeric, defaulting to 0
     for col_name in ['teachers', 'tas']:
         if col_name in df.columns:
             df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
         else:
-            df[col_name] = 0
+            df[col_name] = 0 # Add column with zeros if it doesn't exist
             
+    # Keep only essential columns and drop duplicates by zip (keeping first valid entry)
     processed_df = df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip'], keep='first')
     return processed_df
 
@@ -124,23 +131,32 @@ def load_and_process_csv_data(uploaded_file_object) -> pd.DataFrame:
     if uploaded_file_object is None: 
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
     try:
-        uploaded_file_object.seek(0)
+        uploaded_file_object.seek(0) # Reset file pointer
+        # Try to determine delimiter by reading the first line
         try:
-            first_lines_bytes = uploaded_file_object.read(1024)
+            first_lines_bytes = uploaded_file_object.read(2048) # Read a bit more for safety
             first_lines_str = first_lines_bytes.decode('utf-8-sig').splitlines()[0]
         except UnicodeDecodeError:
-            uploaded_file_object.seek(0)
-            first_lines_bytes = uploaded_file_object.read(1024)
+            uploaded_file_object.seek(0) 
+            first_lines_bytes = uploaded_file_object.read(2048)
             first_lines_str = first_lines_bytes.decode('latin1', errors='ignore').splitlines()[0]
-        except IndexError:
+        except IndexError: # Empty file
              st.warning("Uploaded CSV file appears to be empty.")
              return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
+
         delimiter = ';' if ';' in first_lines_str and first_lines_str.count(';') >= first_lines_str.count(',') else ','
         
-        uploaded_file_object.seek(0)
+        uploaded_file_object.seek(0) # Reset file pointer again for pd.read_csv
         df_csv = pd.read_csv(uploaded_file_object, delimiter=delimiter, encoding='utf-8-sig', encoding_errors='ignore')
-        return process_input_dataframe(df_csv) # Use the common processing function
+        
+        # Explicitly check for 'zip' or 'zip code' after loading
+        temp_cols = [col.strip().lower() for col in df_csv.columns]
+        if 'zip' not in temp_cols and 'zip code' not in temp_cols:
+            st.error("Uploaded CSV must contain a 'zip' or 'zip code' column.")
+            return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+
+        return process_input_dataframe(df_csv) 
     
     except Exception as e:
         st.error(f"Error loading or processing uploaded CSV: {e}")
@@ -197,10 +213,11 @@ def main_plot_from_original_script(gdf_us, df_map_data):
         st.warning("No valid ZIP code data input to display.")
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No data to map", ha='center'); return fig
     
-    df_map_data['zip'] = df_map_data['zip'].astype(str).str.zfill(5)
+    # Ensure zip is 5 digits string, already handled by process_input_dataframe
+    # df_map_data['zip'] = df_map_data['zip'].astype(str).str.zfill(5) 
 
     df_ads_data = df_map_data[['zip']].copy().drop_duplicates()
-    df_schools_data = df_map_data.copy()
+    df_schools_data = df_map_data.copy() # df_map_data now contains 'zip', 'teachers', 'tas'
 
     relevant_zips = set(df_map_data['zip'].unique())
     
@@ -226,7 +243,7 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     else:
         gdf_schools_merged = gpd.GeoDataFrame(columns=['zip', 'teachers', 'tas', 'geometry'], geometry='geometry', crs="EPSG:4326")
 
-    if gdf_schools_merged.empty and gdf_ads_merged.empty:
+    if gdf_schools_merged.empty and gdf_ads_merged.empty: # Should be rare if gdf_filtered was not empty
         st.warning("No geographic data could be matched for the ZIPs in your input."); 
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No geodata for input ZIPs", ha='center'); return fig
 
@@ -236,7 +253,8 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     if 'tas' in gdf_schools_merged.columns and pd.to_numeric(gdf_schools_merged['tas'], errors='coerce').sum() > 0:
         teacher_cols.append('tas')
     
-    if not teacher_cols and not gdf_schools_merged.empty : 
+    if not teacher_cols and not gdf_schools_merged.empty and (('teachers' in gdf_schools_merged and gdf_schools_merged['teachers'].sum() > 0) or ('tas' in gdf_schools_merged and gdf_schools_merged['tas'].sum() > 0)) : 
+        # This case should ideally not be hit if logic above is correct
         st.info("No 'teachers' or 'tas' counts found in the input data for pie charts.")
     elif teacher_cols:
         st.info(f"Using role columns for pie charts: {', '.join(teacher_cols)}")
@@ -306,7 +324,7 @@ def main_plot_from_original_script(gdf_us, df_map_data):
             gdf_ads_3857.plot(ax=ax, marker='s', color='green', markersize=40, label="Input ZIP Locations", zorder=3, edgecolor='darkgreen')
             
             for idx, row_proj in gdf_ads_3857.iterrows():
-                if idx in gdf_ads_merged.index:
+                if idx in gdf_ads_merged.index: # Ensure index exists in the source of 'zip'
                     original_zip = gdf_ads_merged.loc[idx, 'zip']
                     serial = zip_serial_map.get(original_zip)
                     if serial is not None and row_proj.geometry:
@@ -422,33 +440,56 @@ def main_plot_from_original_script(gdf_us, df_map_data):
 # STREAMLIT UI AND APP LOGIC
 ###############################################################################
 st.sidebar.header("Map Data Input")
-st.sidebar.markdown("""
-Enter your ZIP code data directly into the table below.
-- **zip**: 5-digit US ZIP code (mandatory).
-- **teachers**: Number of teachers (numeric, optional).
-- **tas**: Number of TAs (numeric, optional).
-Click the '+' button at the bottom of the table to add new rows.
-""")
 
-# Initialize a session state variable for the editable data
-if 'map_input_data' not in st.session_state:
-    st.session_state.map_input_data = pd.DataFrame([
-        {'zip': '', 'teachers': 0, 'tas': 0}, # Start with one empty row
-    ])
-
-# Use st.data_editor for direct table input
-edited_df = st.sidebar.data_editor(
-    st.session_state.map_input_data,
-    num_rows="dynamic",  # Allows adding/deleting rows
-    key="map_data_editor",
-    column_config={
-        "zip": st.column_config.TextColumn("ZIP Code", help="Enter 5-digit US ZIP code", required=True),
-        "teachers": st.column_config.NumberColumn("Teachers", help="Number of teachers (e.g., 1, 2)", min_value=0, step=1, format="%d"),
-        "tas": st.column_config.NumberColumn("TAs", help="Number of TAs (e.g., 1, 2)", min_value=0, step=1, format="%d"),
-    },
-    use_container_width=True
+# Radio button to choose input method
+input_method = st.sidebar.radio(
+    "Choose your data input method:",
+    ("Direct Table Input", "Upload CSV File"),
+    key="input_method_toggle",
+    horizontal=True, # Display options side-by-side
 )
-st.session_state.map_input_data = edited_df # Keep the editor's state updated
+
+# Initialize session state for data from either method
+if 'processed_map_data' not in st.session_state:
+    st.session_state.processed_map_data = pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+if 'data_editor_df' not in st.session_state: # For persisting data editor content
+     st.session_state.data_editor_df = pd.DataFrame([{'zip': '', 'teachers': 0, 'tas': 0}])
+
+
+if input_method == "Direct Table Input":
+    st.sidebar.markdown("""
+    Enter your ZIP code data directly into the table below.
+    - **zip**: 5-digit US ZIP code (mandatory).
+    - **teachers**: Number of teachers (numeric, optional).
+    - **tas**: Number of TAs (numeric, optional).
+    Click the '+' button at the bottom of the table to add new rows.
+    """)
+    edited_df = st.sidebar.data_editor(
+        st.session_state.data_editor_df, # Use session state to persist table
+        num_rows="dynamic",
+        key="map_data_editor_main", # Unique key
+        column_config={
+            "zip": st.column_config.TextColumn("ZIP Code", help="Enter 5-digit US ZIP code", required=True),
+            "teachers": st.column_config.NumberColumn("Teachers", help="Number of teachers (e.g., 1, 2)", min_value=0, step=1, format="%d"),
+            "tas": st.column_config.NumberColumn("TAs", help="Number of TAs (e.g., 1, 2)", min_value=0, step=1, format="%d"),
+        },
+        use_container_width=True
+    )
+    st.session_state.data_editor_df = edited_df # Update session state with edits
+    # Data for plotting will be taken from edited_df when button is clicked
+
+elif input_method == "Upload CSV File":
+    st.sidebar.markdown("""
+    Upload a CSV file with your ZIP code data.
+    The CSV file **must** contain a column named `zip` (or `zip code`).
+    Optionally, include columns named `teachers` and `tas` for role counts.
+    """)
+    uploaded_csv_file = st.sidebar.file_uploader(
+        "Upload your CSV data file:",
+        type="csv",
+        key="csv_map_data_uploader" # Unique key
+    )
+    # Data for plotting will be taken from uploaded_csv_file when button is clicked
 
 st.sidebar.header("Map Display Options")
 if 'map_expand_factor_orig_v3' not in st.session_state: st.session_state.map_expand_factor_orig_v3 = 1.5
@@ -460,9 +501,7 @@ st.session_state.pie_radius_scale_orig_v3 = st.sidebar.slider("Pie Chart Max Rad
 if 'num_grid_ticks_orig_v3' not in st.session_state: st.session_state.num_grid_ticks_orig_v3 = 10
 st.session_state.num_grid_ticks_orig_v3 = st.sidebar.slider("Number of Lat/Lon Grid Ticks:", min_value=3, max_value=30, value=st.session_state.num_grid_ticks_orig_v3, step=1, key="grid_ticks_slider_orig_v3")
 
-# Generate Map Button
-generate_map_button = st.sidebar.button("Generate Map", key="generate_map_button")
-
+generate_map_button = st.sidebar.button("Generate Map", key="generate_map_button_main")
 
 gdf_us_data = load_us_zip_codes_from_repo(MASTER_ZIP_FILE_PATH)
 
@@ -470,37 +509,86 @@ if gdf_us_data.empty:
     st.error("ERROR: Could not load US ZIP Codes Master File from repository. App cannot proceed. Ensure 'us_zip_master.csv' is in the GitHub repository and correctly formatted.")
     st.stop()
 
-# Main app logic triggered by button
-if generate_map_button:
-    if edited_df is not None and not edited_df.empty:
-        # Process the data from the data_editor
-        df_map_data_processed = process_input_dataframe(edited_df)
+df_map_data_for_plot = pd.DataFrame(columns=['zip', 'teachers', 'tas']) # Initialize
 
-        if not gdf_us_data.empty and not df_map_data_processed.empty:
-            st.info("Input data processed. Generating map...")
-            try:
-                map_figure = main_plot_from_original_script(gdf_us_data, df_map_data_processed)
-                st.pyplot(map_figure)
-                st.success("Map generated successfully!")
-                
-                fn = 'school_ad_zip_map_direct_input.png'
-                img_bytes = io.BytesIO()
-                map_figure.savefig(img_bytes, format='png', dpi=150, bbox_inches='tight')
-                img_bytes.seek(0)
-                st.download_button(label="Download Map as PNG", data=img_bytes, file_name=fn, mime="image/png")
-            except Exception as e: 
-                st.error(f"Error during map generation: {e}")
-                st.exception(e) 
-        elif gdf_us_data.empty: 
-            st.error("Cannot generate map because US ZIP Code master data failed to load.")
-        elif df_map_data_processed.empty:
-             st.warning("No valid data entered in the table or data could not be processed. Please check your input: ensure ZIP codes are 5 digits, and teacher/TA counts are numbers.")
-    else:
-        st.sidebar.warning("Please enter data into the table to generate a map.")
-        st.info("Awaiting data input in the table in the sidebar...")
-elif not generate_map_button : # Initial state or if button not pressed after input
-    st.info("Enter data in the sidebar table and click 'Generate Map'.")
+if generate_map_button:
+    if input_method == "Direct Table Input":
+        if st.session_state.data_editor_df is not None and not st.session_state.data_editor_df.empty:
+            df_map_data_for_plot = process_input_dataframe(st.session_state.data_editor_df)
+            if df_map_data_for_plot.empty and not st.session_state.data_editor_df['zip'].str.strip().all() == '': # If processing resulted in empty but editor had zips
+                 st.sidebar.warning("No valid data entered in the table. Please ensure ZIP codes are 5 digits.")
+        else:
+            st.sidebar.warning("Please enter data into the table to generate a map.")
+    
+    elif input_method == "Upload CSV File":
+        if 'csv_map_data_uploader' in st.session_state and st.session_state.csv_map_data_uploader is not None:
+            # Access the uploaded file from session state if necessary, or directly if available
+            # The file uploader widget itself returns the file object.
+            # We need to ensure 'uploaded_csv_file' is defined in this scope if radio button was just switched.
+            # It's better to re-evaluate the widget if it was just made visible.
+            # For simplicity, assume 'uploaded_csv_file' is available if this path is taken after button press.
+            # This might need adjustment if the file object isn't persisted correctly across radio button switches *before* "Generate Map" is hit.
+            # A common pattern is to store the uploaded file in session state if it exists.
+            
+            # Re-access the file uploader widget to get the current file
+            # This is a bit of a workaround as the direct variable 'uploaded_csv_file' might be out of scope
+            # if the radio button was switched after upload but before 'Generate Map'
+            current_uploaded_file = st.session_state.get("csv_map_data_uploader_file_state", None) # We'd need to save it to state
+
+            # Let's assume uploaded_csv_file from the widget declaration is sufficient if button is pressed
+            # The 'uploaded_csv_file' variable from the widget declaration should be used.
+            # We need to ensure it's defined if this branch is active.
+            # This part is tricky with Streamlit's rerun model.
+            # A more robust way is to process the file immediately upon upload and store the df in session_state.
+            # For now, let's try to use the direct output of the uploader if available.
+
+            # Simplified: get the file if it's in session_state (from a previous upload)
+            # or if the widget is currently visible and has a file.
+            # This logic needs to be robust.
+            # The easiest is to process on "Generate Map" using the current widget's value.
+            
+            # Get the file from the uploader directly (assuming it's available in this run)
+            # This requires `uploaded_csv_file` to be defined when this branch is hit.
+            # This means the file_uploader widget must have been rendered in this specific script run.
+            
+            # Let's refine: if method is CSV, the uploader is rendered.
+            # So, `uploaded_csv_file` (if we name the output of st.file_uploader that) will hold the file.
+            
+            # The variable `uploaded_csv_file` is defined if input_method == "Upload CSV File"
+            # So we can use it here.
+            if 'uploaded_csv_file' in locals() and uploaded_csv_file is not None:
+                 df_map_data_for_plot = load_and_process_csv_data(uploaded_csv_file)
+                 if df_map_data_for_plot.empty:
+                     st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format and content (needs 'zip' column).")
+            else: # No file uploaded via the CSV option
+                st.sidebar.warning("Please upload a CSV file to generate a map.")
+
+
+    if not gdf_us_data.empty and not df_map_data_for_plot.empty:
+        st.info("Input data processed. Generating map...")
+        try:
+            map_figure = main_plot_from_original_script(gdf_us_data, df_map_data_for_plot)
+            st.pyplot(map_figure)
+            st.success("Map generated successfully!")
+            
+            fn = 'school_ad_zip_map_dual_input.png'
+            img_bytes = io.BytesIO()
+            map_figure.savefig(img_bytes, format='png', dpi=150, bbox_inches='tight')
+            img_bytes.seek(0)
+            st.download_button(label="Download Map as PNG", data=img_bytes, file_name=fn, mime="image/png")
+        except Exception as e: 
+            st.error(f"Error during map generation: {e}")
+            st.exception(e) 
+    elif gdf_us_data.empty: 
+        st.error("Cannot generate map because US ZIP Code master data failed to load.")
+    # Removed the specific warning for df_map_data_processed.empty as it's covered by the input method specific warnings
+    elif generate_map_button and df_map_data_for_plot.empty: # If button was pressed but data is still empty
+        st.warning("No valid data provided from the selected input method.")
+
+elif not generate_map_button : 
+    st.info("Choose an input method, provide data in the sidebar, and click 'Generate Map'.")
 
 
 st.markdown("---")
 st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic")
+
