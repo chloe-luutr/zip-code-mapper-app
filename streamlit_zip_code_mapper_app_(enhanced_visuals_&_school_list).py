@@ -30,7 +30,6 @@ The map will show:
 - An OpenStreetMap basemap with Latitude/Longitude grid.
 """)
 
-# NEW: Moved the "Generate Map" button to the main panel for better visibility
 generate_map_button = st.button("Generate Map", type="primary", use_container_width=True, key="generate_map_button_main")
 
 
@@ -44,7 +43,6 @@ MASTER_ZIP_FILE_PATH = BASE_DIR / "us_zip_master.csv"
 # HELPER FUNCTIONS
 ###############################################################################
 
-# Removed @st.cache_data decorator for troubleshooting
 def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
     """Loads US ZIP code data from a CSV file in the repository."""
     try:
@@ -123,25 +121,22 @@ def process_input_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
-    # Handle 'teachers' column
     if 'teachers' in df.columns:
         df['teachers'] = pd.to_numeric(df['teachers'], errors='coerce').fillna(0).astype(int)
     else:
         df['teachers'] = 0
     
-    # MODIFIED: Handle 'tas' or 'ta' column
     if 'tas' in df.columns:
         df['tas'] = pd.to_numeric(df['tas'], errors='coerce').fillna(0).astype(int)
-    elif 'ta' in df.columns: # Check for 'ta' if 'tas' is not present
-        df.rename(columns={'ta': 'tas'}, inplace=True) # Rename 'ta' to 'tas'
+    elif 'ta' in df.columns: 
+        df.rename(columns={'ta': 'tas'}, inplace=True)
         df['tas'] = pd.to_numeric(df['tas'], errors='coerce').fillna(0).astype(int)
     else:
-        df['tas'] = 0 # Default to 0 if neither 'tas' nor 'ta' is present
+        df['tas'] = 0 
             
     processed_df = df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip'], keep='first')
     return processed_df
 
-# Removed @st.cache_data
 def load_and_process_csv_data(uploaded_file_object) -> pd.DataFrame:
     """Loads and processes data from an uploaded CSV file."""
     if uploaded_file_object is None: 
@@ -396,7 +391,6 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     
     transformer = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
     
-    # MODIFIED: Removed dependency on the slider and hardcoded the number of ticks
     num_xticks = 10
     num_yticks = 10
     
@@ -425,11 +419,17 @@ def main_plot_from_original_script(gdf_us, df_map_data):
         if 'buffer_10_3857' in gdf_schools_3857 and gdf_schools_3857['buffer_10_3857'].notna().any(): 
             handles.append(mlines.Line2D([], [], color='orange', linestyle='-', linewidth=1.5, alpha=0.6)); labels.append('10-mile Role Coverage')
     
+    # --- BUG FIX STARTS HERE ---
+    # The original code was missing the `labels.append()` lines, causing the
+    # pie chart colors to be created but not matched with their text labels.
     if teacher_cols and not gdf_schools_merged.empty: 
         if 'teachers' in role_color_map:
-            handles.append(mpatches.Patch(color=role_color_map['teachers'], label='Teachers'))
+            handles.append(mpatches.Patch(color=role_color_map['teachers']))
+            labels.append('Teachers') # FIXED: Explicitly add the label
         if 'tas' in role_color_map:
-            handles.append(mpatches.Patch(color=role_color_map['tas'], label='TAs'))
+            handles.append(mpatches.Patch(color=role_color_map['tas']))
+            labels.append('TAs') # FIXED: Explicitly add the label
+    # --- BUG FIX ENDS HERE ---
             
     current_handles_ax, current_labels_ax = ax.get_legend_handles_labels()
     final_legend_items = {}
@@ -458,7 +458,6 @@ def main_plot_from_original_script(gdf_us, df_map_data):
 ###############################################################################
 st.sidebar.header("Map Data Input")
 
-# Radio button to choose input method
 input_method = st.sidebar.radio(
     "Choose your data input method:",
     ("Direct Table Input", "Upload CSV File"),
@@ -466,17 +465,15 @@ input_method = st.sidebar.radio(
     horizontal=True, 
 )
 
-# Initialize session state for data from either method
 if 'processed_map_data' not in st.session_state:
     st.session_state.processed_map_data = pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 if 'data_editor_df' not in st.session_state: 
      st.session_state.data_editor_df = pd.DataFrame([{'zip': '', 'teachers': 0, 'tas': 0}])
-# Session state for the uploaded file itself to persist its state across reruns if needed
 if 'uploaded_csv_file_state' not in st.session_state:
     st.session_state.uploaded_csv_file_state = None
 
 
-uploaded_csv_file_widget = None # Define outside to ensure it's in scope for button logic if method is CSV
+uploaded_csv_file_widget = None
 
 if input_method == "Direct Table Input":
     st.sidebar.markdown("""
@@ -498,7 +495,7 @@ if input_method == "Direct Table Input":
         use_container_width=True
     )
     st.session_state.data_editor_df = edited_df 
-    st.session_state.uploaded_csv_file_state = None # Clear CSV if user switches to table
+    st.session_state.uploaded_csv_file_state = None
 
 elif input_method == "Upload CSV File":
     st.sidebar.markdown("""
@@ -506,8 +503,6 @@ elif input_method == "Upload CSV File":
     The CSV file **must** contain a column named `zip` (or `zip code`).
     Optionally, include columns named `teachers` and `tas` (or `ta`) for role counts.
     """)
-    # When file is uploaded, it's stored in session state to persist across reruns
-    # The st.file_uploader widget itself also maintains state via its key.
     uploaded_csv_file_widget = st.sidebar.file_uploader(
         "Upload your CSV data file:",
         type="csv",
@@ -515,24 +510,14 @@ elif input_method == "Upload CSV File":
     )
     if uploaded_csv_file_widget is not None:
         st.session_state.uploaded_csv_file_state = uploaded_csv_file_widget
-    # If user switches away from CSV upload after uploading, uploaded_csv_file_state retains the file.
-    # If they switch back, the file_uploader might show the last uploaded file due to its own key-based state.
 
 
 st.sidebar.header("Map Display Options")
-# MODIFIED: Default value for map_expand_factor_orig_v3
 if 'map_expand_factor_orig_v3' not in st.session_state: st.session_state.map_expand_factor_orig_v3 = 4.0
 st.session_state.map_expand_factor_orig_v3 = st.sidebar.slider("Map Zoom/Expand Factor:", min_value=0.5, max_value=5.0, value=st.session_state.map_expand_factor_orig_v3, step=0.1, key="map_expand_slider_orig_v3")
 
 if 'pie_radius_scale_orig_v3' not in st.session_state: st.session_state.pie_radius_scale_orig_v3 = 3000.0
 st.session_state.pie_radius_scale_orig_v3 = st.sidebar.slider("Pie Chart Max Radius Scale (map units):", min_value=500.0, max_value=10000.0, value=st.session_state.pie_radius_scale_orig_v3, step=100.0, key="pie_scale_slider_orig_v3")
-
-# REMOVED: The "Number of Lat/Lon Grid Ticks" slider is no longer needed.
-# if 'num_grid_ticks_orig_v3' not in st.session_state: st.session_state.num_grid_ticks_orig_v3 = 10
-# st.session_state.num_grid_ticks_orig_v3 = st.sidebar.slider("Number of Lat/Lon Grid Ticks:", min_value=3, max_value=30, value=st.session_state.num_grid_ticks_orig_v3, step=1, key="grid_ticks_slider_orig_v3")
-
-# REMOVED: The button is now in the main panel at the top.
-# generate_map_button = st.sidebar.button("Generate Map", key="generate_map_button_main")
 
 gdf_us_data = load_us_zip_codes_from_repo(MASTER_ZIP_FILE_PATH)
 
@@ -547,12 +532,11 @@ if generate_map_button:
     if input_method == "Direct Table Input":
         current_input_data = st.session_state.data_editor_df
         if current_input_data is not None and not current_input_data.empty:
-            # Check if all zips are empty strings, if so, treat as no input
             if (current_input_data['zip'].astype(str).str.strip() == '').all():
                  st.sidebar.warning("Please enter data into the table to generate a map.")
             else:
                 df_map_data_for_plot = process_input_dataframe(current_input_data)
-                if df_map_data_for_plot.empty: # Check if processing resulted in empty df
+                if df_map_data_for_plot.empty:
                     st.sidebar.warning("No valid data found in the table after processing. Please ensure ZIP codes are 5 digits and role counts are numeric.")
         else:
             st.sidebar.warning("Please enter data into the table to generate a map.")
@@ -565,7 +549,7 @@ if generate_map_button:
                  file_to_process.seek(0)
                  has_content = bool(file_to_process.read(1)) 
                  file_to_process.seek(0) 
-                 if has_content: # File had content but processing yielded nothing
+                 if has_content:
                     st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format (needs 'zip' column, optionally 'teachers', 'tas' or 'ta') and content.")
                  else: 
                     st.sidebar.warning("The uploaded CSV file is empty.")
