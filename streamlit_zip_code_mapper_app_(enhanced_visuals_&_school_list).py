@@ -22,7 +22,7 @@ This application generates a map visualizing school roles and advertisement targ
 - The **US ZIP Codes Master File** is loaded automatically.
 - **Choose your input method in the sidebar:**
     - **Direct Table Input:** Enter ZIP codes, teacher counts, and TA counts directly into the table.
-    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (optional), and `tas` (optional) columns.
+    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (optional), and `tas` (or `ta`) (optional) columns.
 The map will show:
 - School locations with pie charts for `teachers` and `tas` (if data provided).
 - 5 and 10-mile coverage radii around locations with role data.
@@ -92,7 +92,7 @@ def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
 def process_input_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     """
     Processes a DataFrame (from st.data_editor or CSV).
-    Ensures 'zip' is string & 5 digits, 'teachers' & 'tas' are numeric (default 0).
+    Ensures 'zip' is string & 5 digits, 'teachers' & 'tas' (or 'ta') are numeric (default 0).
     """
     if df_input is None or df_input.empty:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
@@ -106,25 +106,33 @@ def process_input_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
     if 'zip' not in df.columns:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
     
-    # MODIFIED: Robust handling of ZIP column if read as numeric/float
     def clean_zip(z):
         if pd.isna(z):
             return ""
         if isinstance(z, (float, int)):
-            return str(int(z)) # Convert float like 92008.0 to int 92008, then to str "92008"
+            return str(int(z))
         return str(z)
 
     df['zip'] = df['zip'].apply(clean_zip).str.strip().fillna('').str.zfill(5)
     df = df[df['zip'].str.match(r'^\d{5}$')].copy()
 
-    if df.empty: # If no valid ZIPs remain after cleaning
+    if df.empty:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
-    for col_name in ['teachers', 'tas']:
-        if col_name in df.columns:
-            df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
-        else:
-            df[col_name] = 0
+    # Handle 'teachers' column
+    if 'teachers' in df.columns:
+        df['teachers'] = pd.to_numeric(df['teachers'], errors='coerce').fillna(0).astype(int)
+    else:
+        df['teachers'] = 0
+    
+    # MODIFIED: Handle 'tas' or 'ta' column
+    if 'tas' in df.columns:
+        df['tas'] = pd.to_numeric(df['tas'], errors='coerce').fillna(0).astype(int)
+    elif 'ta' in df.columns: # Check for 'ta' if 'tas' is not present
+        df.rename(columns={'ta': 'tas'}, inplace=True) # Rename 'ta' to 'tas'
+        df['tas'] = pd.to_numeric(df['tas'], errors='coerce').fillna(0).astype(int)
+    else:
+        df['tas'] = 0 # Default to 0 if neither 'tas' nor 'ta' is present
             
     processed_df = df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip'], keep='first')
     return processed_df
@@ -252,12 +260,11 @@ def main_plot_from_original_script(gdf_us, df_map_data):
         teacher_cols.append('tas')
     
     if not teacher_cols and not gdf_schools_merged.empty : 
-        # Check if there was any potential role data, even if not summed to > 0
         has_role_columns = 'teachers' in gdf_schools_merged.columns or 'tas' in gdf_schools_merged.columns
         if has_role_columns and not ((gdf_schools_merged.get('teachers', pd.Series(0)).sum() > 0) or \
                                      (gdf_schools_merged.get('tas', pd.Series(0)).sum() > 0) ) :
              st.info("Role columns ('teachers', 'tas') found, but all counts are zero. No pie charts will be drawn.")
-        elif not has_role_columns: # Should not happen if process_input_dataframe adds them
+        elif not has_role_columns: 
              st.info("No 'teachers' or 'tas' columns found for pie charts.")
     elif teacher_cols:
         st.info(f"Using role columns for pie charts: {', '.join(teacher_cols)}")
@@ -491,7 +498,7 @@ elif input_method == "Upload CSV File":
     st.sidebar.markdown("""
     Upload a CSV file with your ZIP code data.
     The CSV file **must** contain a column named `zip` (or `zip code`).
-    Optionally, include columns named `teachers` and `tas` for role counts.
+    Optionally, include columns named `teachers` and `tas` (or `ta`) for role counts.
     """)
     # When file is uploaded, it's stored in session state to persist across reruns
     # The st.file_uploader widget itself also maintains state via its key.
@@ -551,7 +558,7 @@ if generate_map_button:
                  has_content = bool(file_to_process.read(1)) 
                  file_to_process.seek(0) 
                  if has_content: # File had content but processing yielded nothing
-                    st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format (needs 'zip' column, optionally 'teachers', 'tas') and content.")
+                    st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format (needs 'zip' column, optionally 'teachers', 'tas' or 'ta') and content.")
                  else: 
                     st.sidebar.warning("The uploaded CSV file is empty.")
         else: 
