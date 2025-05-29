@@ -588,7 +588,3 @@ if generate_map_button:
 elif not generate_map_button : 
     st.info("Choose an input method, provide data in the sidebar, and click 'Generate Map'.")
 
-
-st.markdown("---")
-st.markdown("Streamlit app for visualizing school roles and ad ZIPs based on original mapping script logic")
-
