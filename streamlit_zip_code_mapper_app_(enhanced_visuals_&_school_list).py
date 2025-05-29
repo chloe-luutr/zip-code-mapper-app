@@ -22,9 +22,9 @@ This application generates a map visualizing school roles and advertisement targ
 - The **US ZIP Codes Master File** is loaded automatically.
 - **Choose your input method in the sidebar:**
     - **Direct Table Input:** Enter ZIP codes, teacher counts, and TA counts directly into the table.
-    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (column 1 - optional, please do not include if data isn't available), and `TAs` (column 2 - optional, please do not include if data isn't available) columns.
+    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (optional), and `tas` (optional) columns.
 The map will show:
-- School locations with pie charts for `teachers` and `TAs` (if data provided).
+- School locations with pie charts for `teachers` and `tas` (if data provided).
 - 5 and 10-mile coverage radii around locations with role data.
 - All unique ZIPs from your input marked with serial numbers.
 - An OpenStreetMap basemap with Latitude/Longitude grid.
@@ -153,7 +153,7 @@ def load_and_process_csv_data(uploaded_file_object) -> pd.DataFrame:
         # Explicitly check for 'zip' or 'zip code' after loading
         temp_cols = [col.strip().lower() for col in df_csv.columns]
         if 'zip' not in temp_cols and 'zip code' not in temp_cols:
-            st.error("Uploaded CSV must contain a 'zip' or 'zip code' column.")
+            st.error("Uploaded CSV must contain a 'zip' or 'zip code' column for ZIP codes.")
             return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
         return process_input_dataframe(df_csv) 
@@ -287,7 +287,8 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     else: minx, miny, maxx, maxy = combined_bounds_gdf.total_bounds
     
     w = maxx - minx if maxx > minx else 1e6; h = maxy - miny if maxy > miny else 1e6
-    expand_factor = st.session_state.get('map_expand_factor_orig_v3', 1.5) 
+    # MODIFIED: Default zoom factor changed here by using st.session_state.map_expand_factor_orig_v3
+    expand_factor = st.session_state.get('map_expand_factor_orig_v3', 4.0) # Default was 1.5
     pad_x, pad_y = expand_factor * w * 0.1, expand_factor * h * 0.1
 
     min_jobs_val, max_jobs_val = float('inf'), 0
@@ -446,15 +447,20 @@ input_method = st.sidebar.radio(
     "Choose your data input method:",
     ("Direct Table Input", "Upload CSV File"),
     key="input_method_toggle",
-    horizontal=True, # Display options side-by-side
+    horizontal=True, 
 )
 
 # Initialize session state for data from either method
 if 'processed_map_data' not in st.session_state:
     st.session_state.processed_map_data = pd.DataFrame(columns=['zip', 'teachers', 'tas'])
-if 'data_editor_df' not in st.session_state: # For persisting data editor content
+if 'data_editor_df' not in st.session_state: 
      st.session_state.data_editor_df = pd.DataFrame([{'zip': '', 'teachers': 0, 'tas': 0}])
+# Session state for the uploaded file itself to persist its state across reruns if needed
+if 'uploaded_csv_file_state' not in st.session_state:
+    st.session_state.uploaded_csv_file_state = None
 
+
+uploaded_csv_file_widget = None # Define outside to ensure it's in scope for button logic if method is CSV
 
 if input_method == "Direct Table Input":
     st.sidebar.markdown("""
@@ -465,9 +471,9 @@ if input_method == "Direct Table Input":
     Click the '+' button at the bottom of the table to add new rows.
     """)
     edited_df = st.sidebar.data_editor(
-        st.session_state.data_editor_df, # Use session state to persist table
+        st.session_state.data_editor_df, 
         num_rows="dynamic",
-        key="map_data_editor_main", # Unique key
+        key="map_data_editor_main", 
         column_config={
             "zip": st.column_config.TextColumn("ZIP Code", help="Enter 5-digit US ZIP code", required=True),
             "teachers": st.column_config.NumberColumn("Teachers", help="Number of teachers (e.g., 1, 2)", min_value=0, step=1, format="%d"),
@@ -475,24 +481,31 @@ if input_method == "Direct Table Input":
         },
         use_container_width=True
     )
-    st.session_state.data_editor_df = edited_df # Update session state with edits
-    # Data for plotting will be taken from edited_df when button is clicked
+    st.session_state.data_editor_df = edited_df 
+    st.session_state.uploaded_csv_file_state = None # Clear CSV if user switches to table
 
 elif input_method == "Upload CSV File":
     st.sidebar.markdown("""
     Upload a CSV file with your ZIP code data.
     The CSV file **must** contain a column named `zip` (or `zip code`).
-    Please include two (2) columns - first column named `teachers` and second column `TAs` for role counts.
+    Optionally, include columns named `teachers` and `tas` for role counts.
     """)
-    uploaded_csv_file = st.sidebar.file_uploader(
+    # When file is uploaded, it's stored in session state to persist across reruns
+    # The st.file_uploader widget itself also maintains state via its key.
+    uploaded_csv_file_widget = st.sidebar.file_uploader(
         "Upload your CSV data file:",
         type="csv",
-        key="csv_map_data_uploader" # Unique key
+        key="csv_map_data_uploader" 
     )
-    # Data for plotting will be taken from uploaded_csv_file when button is clicked
+    if uploaded_csv_file_widget is not None:
+        st.session_state.uploaded_csv_file_state = uploaded_csv_file_widget
+    # If user switches away from CSV upload after uploading, uploaded_csv_file_state retains the file.
+    # If they switch back, the file_uploader might show the last uploaded file due to its own key-based state.
+
 
 st.sidebar.header("Map Display Options")
-if 'map_expand_factor_orig_v3' not in st.session_state: st.session_state.map_expand_factor_orig_v3 = 1.5
+# MODIFIED: Default value for map_expand_factor_orig_v3
+if 'map_expand_factor_orig_v3' not in st.session_state: st.session_state.map_expand_factor_orig_v3 = 4.0
 st.session_state.map_expand_factor_orig_v3 = st.sidebar.slider("Map Zoom/Expand Factor:", min_value=0.5, max_value=5.0, value=st.session_state.map_expand_factor_orig_v3, step=0.1, key="map_expand_slider_orig_v3")
 
 if 'pie_radius_scale_orig_v3' not in st.session_state: st.session_state.pie_radius_scale_orig_v3 = 3000.0
@@ -509,61 +522,41 @@ if gdf_us_data.empty:
     st.error("ERROR: Could not load US ZIP Codes Master File from repository. App cannot proceed. Ensure 'us_zip_master.csv' is in the GitHub repository and correctly formatted.")
     st.stop()
 
-df_map_data_for_plot = pd.DataFrame(columns=['zip', 'teachers', 'tas']) # Initialize
+df_map_data_for_plot = pd.DataFrame(columns=['zip', 'teachers', 'tas']) 
 
 if generate_map_button:
+    current_input_data = None
     if input_method == "Direct Table Input":
-        if st.session_state.data_editor_df is not None and not st.session_state.data_editor_df.empty:
-            df_map_data_for_plot = process_input_dataframe(st.session_state.data_editor_df)
-            if df_map_data_for_plot.empty and not st.session_state.data_editor_df['zip'].str.strip().all() == '': # If processing resulted in empty but editor had zips
-                 st.sidebar.warning("No valid data entered in the table. Please ensure ZIP codes are 5 digits.")
+        current_input_data = st.session_state.data_editor_df
+        if current_input_data is not None and not current_input_data.empty:
+            # Check if all zips are empty strings, if so, treat as no input
+            if (current_input_data['zip'].astype(str).str.strip() == '').all():
+                 st.sidebar.warning("Please enter data into the table to generate a map.")
+            else:
+                df_map_data_for_plot = process_input_dataframe(current_input_data)
+                if df_map_data_for_plot.empty:
+                    st.sidebar.warning("No valid data entered in the table. Please ensure ZIP codes are 5 digits.")
         else:
             st.sidebar.warning("Please enter data into the table to generate a map.")
     
     elif input_method == "Upload CSV File":
-        if 'csv_map_data_uploader' in st.session_state and st.session_state.csv_map_data_uploader is not None:
-            # Access the uploaded file from session state if necessary, or directly if available
-            # The file uploader widget itself returns the file object.
-            # We need to ensure 'uploaded_csv_file' is defined in this scope if radio button was just switched.
-            # It's better to re-evaluate the widget if it was just made visible.
-            # For simplicity, assume 'uploaded_csv_file' is available if this path is taken after button press.
-            # This might need adjustment if the file object isn't persisted correctly across radio button switches *before* "Generate Map" is hit.
-            # A common pattern is to store the uploaded file in session state if it exists.
-            
-            # Re-access the file uploader widget to get the current file
-            # This is a bit of a workaround as the direct variable 'uploaded_csv_file' might be out of scope
-            # if the radio button was switched after upload but before 'Generate Map'
-            current_uploaded_file = st.session_state.get("csv_map_data_uploader_file_state", None) # We'd need to save it to state
+        # Use the file from session state, which was set when the widget was last active
+        file_to_process = st.session_state.uploaded_csv_file_state
+        if file_to_process is not None:
+             df_map_data_for_plot = load_and_process_csv_data(file_to_process)
+             if df_map_data_for_plot.empty:
+                 # Check if the original file actually had content
+                 file_to_process.seek(0)
+                 has_content = bool(file_to_process.read(1)) # Read one byte to check
+                 file_to_process.seek(0) # Reset pointer
+                 if has_content:
+                    st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format (needs 'zip' column, optionally 'teachers', 'tas') and content.")
+                 else: # File was empty
+                    st.sidebar.warning("The uploaded CSV file is empty.")
+        else: 
+            st.sidebar.warning("No CSV file uploaded. Please select a file using the 'Upload CSV File' option.")
 
-            # Let's assume uploaded_csv_file from the widget declaration is sufficient if button is pressed
-            # The 'uploaded_csv_file' variable from the widget declaration should be used.
-            # We need to ensure it's defined if this branch is active.
-            # This part is tricky with Streamlit's rerun model.
-            # A more robust way is to process the file immediately upon upload and store the df in session_state.
-            # For now, let's try to use the direct output of the uploader if available.
-
-            # Simplified: get the file if it's in session_state (from a previous upload)
-            # or if the widget is currently visible and has a file.
-            # This logic needs to be robust.
-            # The easiest is to process on "Generate Map" using the current widget's value.
-            
-            # Get the file from the uploader directly (assuming it's available in this run)
-            # This requires `uploaded_csv_file` to be defined when this branch is hit.
-            # This means the file_uploader widget must have been rendered in this specific script run.
-            
-            # Let's refine: if method is CSV, the uploader is rendered.
-            # So, `uploaded_csv_file` (if we name the output of st.file_uploader that) will hold the file.
-            
-            # The variable `uploaded_csv_file` is defined if input_method == "Upload CSV File"
-            # So we can use it here.
-            if 'uploaded_csv_file' in locals() and uploaded_csv_file is not None:
-                 df_map_data_for_plot = load_and_process_csv_data(uploaded_csv_file)
-                 if df_map_data_for_plot.empty:
-                     st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format and content (needs 'zip' column).")
-            else: # No file uploaded via the CSV option
-                st.sidebar.warning("Please upload a CSV file to generate a map.")
-
-
+    # Proceed to plot if we have processed data
     if not gdf_us_data.empty and not df_map_data_for_plot.empty:
         st.info("Input data processed. Generating map...")
         try:
@@ -579,11 +572,10 @@ if generate_map_button:
         except Exception as e: 
             st.error(f"Error during map generation: {e}")
             st.exception(e) 
-    elif gdf_us_data.empty: 
+    elif gdf_us_data.empty: # Should be caught by st.stop() earlier
         st.error("Cannot generate map because US ZIP Code master data failed to load.")
-    # Removed the specific warning for df_map_data_processed.empty as it's covered by the input method specific warnings
     elif generate_map_button and df_map_data_for_plot.empty: # If button was pressed but data is still empty
-        st.warning("No valid data provided from the selected input method.")
+        st.warning("No valid data provided from the selected input method to generate a map.")
 
 elif not generate_map_button : 
     st.info("Choose an input method, provide data in the sidebar, and click 'Generate Map'.")
