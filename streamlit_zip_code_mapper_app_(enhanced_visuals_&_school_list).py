@@ -40,7 +40,7 @@ MASTER_ZIP_FILE_PATH = BASE_DIR / "us_zip_master.csv"
 # HELPER FUNCTIONS
 ###############################################################################
 
-# MODIFIED: Removed @st.cache_data decorator for troubleshooting
+# Removed @st.cache_data decorator for troubleshooting
 def load_us_zip_codes_from_repo(csv_file_path: Path) -> gpd.GeoDataFrame:
     """Loads US ZIP code data from a CSV file in the repository."""
     try:
@@ -98,61 +98,60 @@ def process_input_dataframe(df_input: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
     df = df_input.copy()
-    # Normalize column names (e.g., convert to lower case, strip whitespace)
     df.columns = df.columns.str.strip().str.lower()
 
-
-    if 'zip code' in df.columns and 'zip' not in df.columns: # Handle 'zip code' as 'zip'
+    if 'zip code' in df.columns and 'zip' not in df.columns:
         df.rename(columns={'zip code': 'zip'}, inplace=True)
 
     if 'zip' not in df.columns:
-        # This error should ideally be caught by the input method's requirements
-        # st.error("Input data must contain a 'zip' or 'zip code' column.") 
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
     
-    # Convert to string, fill NaNs with empty string before zfill
-    df['zip'] = df['zip'].astype(str).str.strip().fillna('').str.zfill(5)
-    # Keep only rows where zip is exactly 5 digits
-    df = df[df['zip'].str.match(r'^\d{5}$')].copy() # Use .copy() to avoid SettingWithCopyWarning
+    # MODIFIED: Robust handling of ZIP column if read as numeric/float
+    def clean_zip(z):
+        if pd.isna(z):
+            return ""
+        if isinstance(z, (float, int)):
+            return str(int(z)) # Convert float like 92008.0 to int 92008, then to str "92008"
+        return str(z)
 
-    # Ensure 'teachers' and 'tas' columns exist and are numeric, defaulting to 0
+    df['zip'] = df['zip'].apply(clean_zip).str.strip().fillna('').str.zfill(5)
+    df = df[df['zip'].str.match(r'^\d{5}$')].copy()
+
+    if df.empty: # If no valid ZIPs remain after cleaning
+        return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
+
     for col_name in ['teachers', 'tas']:
         if col_name in df.columns:
             df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
         else:
-            df[col_name] = 0 # Add column with zeros if it doesn't exist
+            df[col_name] = 0
             
-    # Keep only essential columns and drop duplicates by zip (keeping first valid entry)
     processed_df = df[['zip', 'teachers', 'tas']].drop_duplicates(subset=['zip'], keep='first')
     return processed_df
 
-# MODIFIED: Removed @st.cache_data from this function as well, as it's also a data loading function
-# and could be a source of similar issues if the primary one was problematic.
+# Removed @st.cache_data
 def load_and_process_csv_data(uploaded_file_object) -> pd.DataFrame:
     """Loads and processes data from an uploaded CSV file."""
     if uploaded_file_object is None: 
         return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
     try:
-        uploaded_file_object.seek(0) # Reset file pointer
-        # Try to determine delimiter by reading the first line
+        uploaded_file_object.seek(0) 
         try:
-            first_lines_bytes = uploaded_file_object.read(2048) # Read a bit more for safety
+            first_lines_bytes = uploaded_file_object.read(2048) 
             first_lines_str = first_lines_bytes.decode('utf-8-sig').splitlines()[0]
         except UnicodeDecodeError:
             uploaded_file_object.seek(0) 
             first_lines_bytes = uploaded_file_object.read(2048)
             first_lines_str = first_lines_bytes.decode('latin1', errors='ignore').splitlines()[0]
-        except IndexError: # Empty file
+        except IndexError: 
              st.warning("Uploaded CSV file appears to be empty.")
              return pd.DataFrame(columns=['zip', 'teachers', 'tas'])
 
-
         delimiter = ';' if ';' in first_lines_str and first_lines_str.count(';') >= first_lines_str.count(',') else ','
         
-        uploaded_file_object.seek(0) # Reset file pointer again for pd.read_csv
+        uploaded_file_object.seek(0) 
         df_csv = pd.read_csv(uploaded_file_object, delimiter=delimiter, encoding='utf-8-sig', encoding_errors='ignore')
         
-        # Explicitly check for 'zip' or 'zip code' after loading
         temp_cols = [col.strip().lower() for col in df_csv.columns]
         if 'zip' not in temp_cols and 'zip code' not in temp_cols:
             st.error("Uploaded CSV must contain a 'zip' or 'zip code' column for ZIP codes.")
@@ -215,11 +214,8 @@ def main_plot_from_original_script(gdf_us, df_map_data):
         st.warning("No valid ZIP code data input to display.")
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No data to map", ha='center'); return fig
     
-    # Ensure zip is 5 digits string, already handled by process_input_dataframe
-    # df_map_data['zip'] = df_map_data['zip'].astype(str).str.zfill(5) 
-
     df_ads_data = df_map_data[['zip']].copy().drop_duplicates()
-    df_schools_data = df_map_data.copy() # df_map_data now contains 'zip', 'teachers', 'tas'
+    df_schools_data = df_map_data.copy() 
 
     relevant_zips = set(df_map_data['zip'].unique())
     
@@ -245,7 +241,7 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     else:
         gdf_schools_merged = gpd.GeoDataFrame(columns=['zip', 'teachers', 'tas', 'geometry'], geometry='geometry', crs="EPSG:4326")
 
-    if gdf_schools_merged.empty and gdf_ads_merged.empty: # Should be rare if gdf_filtered was not empty
+    if gdf_schools_merged.empty and gdf_ads_merged.empty: 
         st.warning("No geographic data could be matched for the ZIPs in your input."); 
         fig, ax = plt.subplots(); ax.text(0.5,0.5, "No geodata for input ZIPs", ha='center'); return fig
 
@@ -255,11 +251,17 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     if 'tas' in gdf_schools_merged.columns and pd.to_numeric(gdf_schools_merged['tas'], errors='coerce').sum() > 0:
         teacher_cols.append('tas')
     
-    if not teacher_cols and not gdf_schools_merged.empty and (('teachers' in gdf_schools_merged and gdf_schools_merged['teachers'].sum() > 0) or ('tas' in gdf_schools_merged and gdf_schools_merged['tas'].sum() > 0)) : 
-        # This case should ideally not be hit if logic above is correct
-        st.info("No 'teachers' or 'tas' counts found in the input data for pie charts.")
+    if not teacher_cols and not gdf_schools_merged.empty : 
+        # Check if there was any potential role data, even if not summed to > 0
+        has_role_columns = 'teachers' in gdf_schools_merged.columns or 'tas' in gdf_schools_merged.columns
+        if has_role_columns and not ((gdf_schools_merged.get('teachers', pd.Series(0)).sum() > 0) or \
+                                     (gdf_schools_merged.get('tas', pd.Series(0)).sum() > 0) ) :
+             st.info("Role columns ('teachers', 'tas') found, but all counts are zero. No pie charts will be drawn.")
+        elif not has_role_columns: # Should not happen if process_input_dataframe adds them
+             st.info("No 'teachers' or 'tas' columns found for pie charts.")
     elif teacher_cols:
         st.info(f"Using role columns for pie charts: {', '.join(teacher_cols)}")
+
 
     if not gdf_schools_merged.empty and 'geometry' in gdf_schools_merged.columns and not gdf_schools_merged.geometry.is_empty.all() and teacher_cols:
         create_geodesic_buffers_for_schools_original(gdf_schools_merged, radii=(5,10)) 
@@ -289,8 +291,7 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     else: minx, miny, maxx, maxy = combined_bounds_gdf.total_bounds
     
     w = maxx - minx if maxx > minx else 1e6; h = maxy - miny if maxy > miny else 1e6
-    # MODIFIED: Default zoom factor changed here by using st.session_state.map_expand_factor_orig_v3
-    expand_factor = st.session_state.get('map_expand_factor_orig_v3', 4.0) # Default was 1.5
+    expand_factor = st.session_state.get('map_expand_factor_orig_v3', 4.0) 
     pad_x, pad_y = expand_factor * w * 0.1, expand_factor * h * 0.1
 
     min_jobs_val, max_jobs_val = float('inf'), 0
@@ -327,7 +328,7 @@ def main_plot_from_original_script(gdf_us, df_map_data):
             gdf_ads_3857.plot(ax=ax, marker='s', color='green', markersize=40, label="Input ZIP Locations", zorder=3, edgecolor='darkgreen')
             
             for idx, row_proj in gdf_ads_3857.iterrows():
-                if idx in gdf_ads_merged.index: # Ensure index exists in the source of 'zip'
+                if idx in gdf_ads_merged.index: 
                     original_zip = gdf_ads_merged.loc[idx, 'zip']
                     serial = zip_serial_map.get(original_zip)
                     if serial is not None and row_proj.geometry:
@@ -536,29 +537,26 @@ if generate_map_button:
                  st.sidebar.warning("Please enter data into the table to generate a map.")
             else:
                 df_map_data_for_plot = process_input_dataframe(current_input_data)
-                if df_map_data_for_plot.empty:
-                    st.sidebar.warning("No valid data entered in the table. Please ensure ZIP codes are 5 digits.")
+                if df_map_data_for_plot.empty: # Check if processing resulted in empty df
+                    st.sidebar.warning("No valid data found in the table after processing. Please ensure ZIP codes are 5 digits and role counts are numeric.")
         else:
             st.sidebar.warning("Please enter data into the table to generate a map.")
     
     elif input_method == "Upload CSV File":
-        # Use the file from session state, which was set when the widget was last active
         file_to_process = st.session_state.uploaded_csv_file_state
         if file_to_process is not None:
              df_map_data_for_plot = load_and_process_csv_data(file_to_process)
              if df_map_data_for_plot.empty:
-                 # Check if the original file actually had content
                  file_to_process.seek(0)
-                 has_content = bool(file_to_process.read(1)) # Read one byte to check
-                 file_to_process.seek(0) # Reset pointer
-                 if has_content:
+                 has_content = bool(file_to_process.read(1)) 
+                 file_to_process.seek(0) 
+                 if has_content: # File had content but processing yielded nothing
                     st.sidebar.warning("Uploaded CSV file did not contain valid data or could not be processed. Please check the file format (needs 'zip' column, optionally 'teachers', 'tas') and content.")
-                 else: # File was empty
+                 else: 
                     st.sidebar.warning("The uploaded CSV file is empty.")
         else: 
             st.sidebar.warning("No CSV file uploaded. Please select a file using the 'Upload CSV File' option.")
 
-    # Proceed to plot if we have processed data
     if not gdf_us_data.empty and not df_map_data_for_plot.empty:
         st.info("Input data processed. Generating map...")
         try:
@@ -574,9 +572,9 @@ if generate_map_button:
         except Exception as e: 
             st.error(f"Error during map generation: {e}")
             st.exception(e) 
-    elif gdf_us_data.empty: # Should be caught by st.stop() earlier
+    elif gdf_us_data.empty: 
         st.error("Cannot generate map because US ZIP Code master data failed to load.")
-    elif generate_map_button and df_map_data_for_plot.empty: # If button was pressed but data is still empty
+    elif generate_map_button and df_map_data_for_plot.empty: 
         st.warning("No valid data provided from the selected input method to generate a map.")
 
 elif not generate_map_button : 
