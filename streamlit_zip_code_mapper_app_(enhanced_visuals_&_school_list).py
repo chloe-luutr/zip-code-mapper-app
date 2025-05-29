@@ -30,6 +30,10 @@ The map will show:
 - An OpenStreetMap basemap with Latitude/Longitude grid.
 """)
 
+# NEW: Moved the "Generate Map" button to the main panel for better visibility
+generate_map_button = st.button("Generate Map", type="primary", use_container_width=True, key="generate_map_button_main")
+
+
 ###############################################################################
 # FILE PATHS FOR BUILT-IN DATA
 ###############################################################################
@@ -391,8 +395,10 @@ def main_plot_from_original_script(gdf_us, df_map_data):
     ax.set_xlim(minx - pad_x, maxx + pad_x); ax.set_ylim(miny - pad_y, maxy + pad_y)
     
     transformer = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    num_xticks = st.session_state.get('num_grid_ticks_orig_v3', 10)
-    num_yticks = st.session_state.get('num_grid_ticks_orig_v3', 10) 
+    
+    # MODIFIED: Removed dependency on the slider and hardcoded the number of ticks
+    num_xticks = 10
+    num_yticks = 10
     
     plot_xticks = np.linspace(ax.get_xlim()[0], ax.get_xlim()[1], num=num_xticks)
     plot_yticks = np.linspace(ax.get_ylim()[0], ax.get_ylim()[1], num=num_yticks)
@@ -521,10 +527,12 @@ st.session_state.map_expand_factor_orig_v3 = st.sidebar.slider("Map Zoom/Expand 
 if 'pie_radius_scale_orig_v3' not in st.session_state: st.session_state.pie_radius_scale_orig_v3 = 3000.0
 st.session_state.pie_radius_scale_orig_v3 = st.sidebar.slider("Pie Chart Max Radius Scale (map units):", min_value=500.0, max_value=10000.0, value=st.session_state.pie_radius_scale_orig_v3, step=100.0, key="pie_scale_slider_orig_v3")
 
-if 'num_grid_ticks_orig_v3' not in st.session_state: st.session_state.num_grid_ticks_orig_v3 = 10
-st.session_state.num_grid_ticks_orig_v3 = st.sidebar.slider("Number of Lat/Lon Grid Ticks:", min_value=3, max_value=30, value=st.session_state.num_grid_ticks_orig_v3, step=1, key="grid_ticks_slider_orig_v3")
+# REMOVED: The "Number of Lat/Lon Grid Ticks" slider is no longer needed.
+# if 'num_grid_ticks_orig_v3' not in st.session_state: st.session_state.num_grid_ticks_orig_v3 = 10
+# st.session_state.num_grid_ticks_orig_v3 = st.sidebar.slider("Number of Lat/Lon Grid Ticks:", min_value=3, max_value=30, value=st.session_state.num_grid_ticks_orig_v3, step=1, key="grid_ticks_slider_orig_v3")
 
-generate_map_button = st.sidebar.button("Generate Map", key="generate_map_button_main")
+# REMOVED: The button is now in the main panel at the top.
+# generate_map_button = st.sidebar.button("Generate Map", key="generate_map_button_main")
 
 gdf_us_data = load_us_zip_codes_from_repo(MASTER_ZIP_FILE_PATH)
 
@@ -585,4 +593,4 @@ if generate_map_button:
         st.warning("No valid data provided from the selected input method to generate a map.")
 
 elif not generate_map_button : 
-    st.info("Choose an input method, provide data in the sidebar, and click 'Generate Map'.")
+    st.info("Choose an input method, provide data in the sidebar, and click 'Generate Map' above.")
