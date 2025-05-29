@@ -482,7 +482,7 @@ elif input_method == "Upload CSV File":
     st.sidebar.markdown("""
     Upload a CSV file with your ZIP code data.
     The CSV file **must** contain a column named `zip` (or `zip code`).
-    Optionally, include columns named `teachers` and `tas` for role counts.
+    Please include two (2) columns - first column named `teachers` and second column `TAs` for role counts.
     """)
     uploaded_csv_file = st.sidebar.file_uploader(
         "Upload your CSV data file:",
