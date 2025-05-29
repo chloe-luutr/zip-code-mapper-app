@@ -22,9 +22,9 @@ This application generates a map visualizing school roles and advertisement targ
 - The **US ZIP Codes Master File** is loaded automatically.
 - **Choose your input method in the sidebar:**
     - **Direct Table Input:** Enter ZIP codes, teacher counts, and TA counts directly into the table.
-    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (optional), and `tas` (optional) columns.
+    - **Upload CSV File:** Upload a CSV file with `zip`, `teachers` (column 1 - optional, please do not include if data isn't available), and `TAs` (column 2 - optional, please do not include if data isn't available) columns.
 The map will show:
-- School locations with pie charts for `teachers` and `tas` (if data provided).
+- School locations with pie charts for `teachers` and `TAs` (if data provided).
 - 5 and 10-mile coverage radii around locations with role data.
 - All unique ZIPs from your input marked with serial numbers.
 - An OpenStreetMap basemap with Latitude/Longitude grid.
